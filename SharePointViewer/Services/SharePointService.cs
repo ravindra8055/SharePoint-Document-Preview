@@ -7,48 +7,61 @@ namespace SharePointViewer.Services;
 
 public class SharePointService
 {
-    private readonly GraphServiceClient _graphClient;
+    private readonly GraphServiceClient? _graphClient;
+    private readonly string? _initErrorMessage;
 
     public SharePointService(IConfiguration configuration)
     {
-        var authType = configuration["SharePointAuth:AuthType"];
-        var tenantId = configuration["SharePointAuth:TenantId"];
-        var clientId = configuration["SharePointAuth:ClientId"];
-        var scopes = new[] { "https://graph.microsoft.com/.default" };
-
-        if (string.Equals(authType, "UsernamePassword", StringComparison.OrdinalIgnoreCase))
+        try
         {
-            var username = configuration["SharePointAuth:Username"];
-            var password = configuration["SharePointAuth:Password"];
+            var authType = configuration["SharePointAuth:AuthType"];
+            var tenantId = configuration["SharePointAuth:TenantId"];
+            var clientId = configuration["SharePointAuth:ClientId"];
+            var scopes = new[] { "https://graph.microsoft.com/.default" };
 
-            var options = new UsernamePasswordCredentialOptions
+            if (string.Equals(authType, "UsernamePassword", StringComparison.OrdinalIgnoreCase))
             {
-                AuthorityHost = AzureAuthorityHosts.AzurePublicCloud,
-            };
+                var username = configuration["SharePointAuth:Username"];
+                var password = configuration["SharePointAuth:Password"];
 
-            var usernamePasswordCredential = new UsernamePasswordCredential(
-                username, password, tenantId, clientId, options);
+                var options = new UsernamePasswordCredentialOptions
+                {
+                    AuthorityHost = AzureAuthorityHosts.AzurePublicCloud,
+                };
 
-            _graphClient = new GraphServiceClient(usernamePasswordCredential, scopes);
+                var usernamePasswordCredential = new UsernamePasswordCredential(
+                    username, password, tenantId, clientId, options);
+
+                _graphClient = new GraphServiceClient(usernamePasswordCredential, scopes);
+            }
+            else
+            {
+                var clientSecret = configuration["SharePointAuth:ClientSecret"];
+
+                var options = new ClientSecretCredentialOptions
+                {
+                    AuthorityHost = AzureAuthorityHosts.AzurePublicCloud,
+                };
+
+                var clientSecretCredential = new ClientSecretCredential(
+                    tenantId, clientId, clientSecret, options);
+
+                _graphClient = new GraphServiceClient(clientSecretCredential, scopes);
+            }
         }
-        else
+        catch (Exception ex)
         {
-            var clientSecret = configuration["SharePointAuth:ClientSecret"];
-
-            var options = new ClientSecretCredentialOptions
-            {
-                AuthorityHost = AzureAuthorityHosts.AzurePublicCloud,
-            };
-
-            var clientSecretCredential = new ClientSecretCredential(
-                tenantId, clientId, clientSecret, options);
-
-            _graphClient = new GraphServiceClient(clientSecretCredential, scopes);
+            _initErrorMessage = ex.Message;
         }
     }
 
     public async Task<List<SharePointFile>> GetFilesInFolderAsync(string folderUrl)
     {
+        if (_graphClient == null)
+        {
+            throw new Exception($"SharePoint client is not configured correctly. Please check appsettings.json credentials. Error: {_initErrorMessage}");
+        }
+
         var files = new List<SharePointFile>();
 
         try
