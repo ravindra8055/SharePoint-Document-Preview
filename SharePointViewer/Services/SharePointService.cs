@@ -11,21 +11,40 @@ public class SharePointService
 
     public SharePointService(IConfiguration configuration)
     {
-        var tenantId = configuration["AzureAd:TenantId"];
-        var clientId = configuration["AzureAd:ClientId"];
-        var clientSecret = configuration["AzureAd:ClientSecret"];
-
-        var options = new ClientSecretCredentialOptions
-        {
-            AuthorityHost = AzureAuthorityHosts.AzurePublicCloud,
-        };
-
-        var clientSecretCredential = new ClientSecretCredential(
-            tenantId, clientId, clientSecret, options);
-
+        var authType = configuration["SharePointAuth:AuthType"];
+        var tenantId = configuration["SharePointAuth:TenantId"];
+        var clientId = configuration["SharePointAuth:ClientId"];
         var scopes = new[] { "https://graph.microsoft.com/.default" };
 
-        _graphClient = new GraphServiceClient(clientSecretCredential, scopes);
+        if (string.Equals(authType, "UsernamePassword", StringComparison.OrdinalIgnoreCase))
+        {
+            var username = configuration["SharePointAuth:Username"];
+            var password = configuration["SharePointAuth:Password"];
+
+            var options = new UsernamePasswordCredentialOptions
+            {
+                AuthorityHost = AzureAuthorityHosts.AzurePublicCloud,
+            };
+
+            var usernamePasswordCredential = new UsernamePasswordCredential(
+                username, password, tenantId, clientId, options);
+
+            _graphClient = new GraphServiceClient(usernamePasswordCredential, scopes);
+        }
+        else
+        {
+            var clientSecret = configuration["SharePointAuth:ClientSecret"];
+
+            var options = new ClientSecretCredentialOptions
+            {
+                AuthorityHost = AzureAuthorityHosts.AzurePublicCloud,
+            };
+
+            var clientSecretCredential = new ClientSecretCredential(
+                tenantId, clientId, clientSecret, options);
+
+            _graphClient = new GraphServiceClient(clientSecretCredential, scopes);
+        }
     }
 
     public async Task<List<SharePointFile>> GetFilesInFolderAsync(string folderUrl)
