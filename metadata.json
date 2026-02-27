@@ -1,5 +1,5 @@
 {
   "name": "SharePoint Document preview POC",
-  "description": "",
+  "description": "A .NET 8 Blazor Server application to view SharePoint folder files with a CSV fallback and preview functionality.",
   "requestFramePermissions": []
 }
