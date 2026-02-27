@@ -1,0 +1,191 @@
+@page "/"
+@using System.IO
+@using SharePointViewer.Models
+@using SharePointViewer.Services
+@inject SharePointService SharePointService
+@rendermode InteractiveServer
+
+<PageTitle>SharePoint Folder Viewer</PageTitle>
+
+<div class="container mt-5">
+    <h2>SharePoint Folder Viewer</h2>
+    
+    <div class="card mb-4">
+        <div class="card-body">
+            <div class="mb-4">
+                <div class="form-check form-check-inline">
+                    <input class="form-check-input" type="radio" name="dataSource" id="sharepointSource" checked="@(!UseCsvUpload)" @onchange="@(() => UseCsvUpload = false)">
+                    <label class="form-check-label" for="sharepointSource">SharePoint URL</label>
+                </div>
+                <div class="form-check form-check-inline">
+                    <input class="form-check-input" type="radio" name="dataSource" id="csvSource" checked="@UseCsvUpload" @onchange="@(() => UseCsvUpload = true)">
+                    <label class="form-check-label" for="csvSource">CSV Upload (Fallback)</label>
+                </div>
+            </div>
+
+            @if (!UseCsvUpload)
+            {
+                <div class="mb-3">
+                    <label for="folderUrl" class="form-label">SharePoint Folder URL</label>
+                    <input type="text" class="form-control" id="folderUrl" @bind="FolderUrl" placeholder="https://contoso.sharepoint.com/sites/MySite/Shared Documents/MyFolder" />
+                </div>
+                <button class="btn btn-primary" @onclick="LoadFiles" disabled="@IsLoading">
+                    @if (IsLoading)
+                    {
+                        <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                        <span> Loading...</span>
+                    }
+                    else
+                    {
+                        <span>Get Files</span>
+                    }
+                </button>
+            }
+            else
+            {
+                <div class="mb-3">
+                    <label for="csvFile" class="form-label">Upload CSV File (Format: Name, Size, LastModified, PreviewUrl)</label>
+                    <InputFile class="form-control" id="csvFile" OnChange="HandleCsvUpload" accept=".csv" />
+                </div>
+                @if (IsLoading)
+                {
+                    <div class="mt-2 text-primary">
+                        <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                        <span> Processing CSV...</span>
+                    </div>
+                }
+            }
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(ErrorMessage))
+    {
+        <div class="alert alert-danger">@ErrorMessage</div>
+    }
+
+    @if (Files != null)
+    {
+        <div class="table-responsive">
+            <table class="table table-striped table-hover">
+                <thead class="table-dark">
+                    <tr>
+                        <th>File Name</th>
+                        <th>File Size (Bytes)</th>
+                        <th>Last Modified Date</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (Files.Count == 0)
+                    {
+                        <tr>
+                            <td colspan="4" class="text-center">No files found.</td>
+                        </tr>
+                    }
+                    else
+                    {
+                        @foreach (var file in Files)
+                        {
+                            <tr>
+                                <td>@file.Name</td>
+                                <td>@file.Size.ToString("N0")</td>
+                                <td>@(file.LastModifiedDateTime?.ToString("g") ?? "N/A")</td>
+                                <td>
+                                    @if (!string.IsNullOrWhiteSpace(file.PreviewUrl))
+                                    {
+                                        <a href="@file.PreviewUrl" target="_blank" class="btn btn-sm btn-outline-primary">Preview</a>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+
+@code {
+    private bool UseCsvUpload { get; set; } = false;
+    private string FolderUrl { get; set; } = string.Empty;
+    private List<SharePointFile>? Files { get; set; }
+    private bool IsLoading { get; set; }
+    private string? ErrorMessage { get; set; }
+
+    private async Task LoadFiles()
+    {
+        if (string.IsNullOrWhiteSpace(FolderUrl))
+        {
+            ErrorMessage = "Please enter a valid SharePoint folder URL.";
+            return;
+        }
+
+        IsLoading = true;
+        ErrorMessage = null;
+        Files = null;
+
+        try
+        {
+            Files = await SharePointService.GetFilesInFolderAsync(FolderUrl);
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = ex.Message;
+        }
+        finally
+        {
+            IsLoading = false;
+        }
+    }
+
+    private async Task HandleCsvUpload(InputFileChangeEventArgs e)
+    {
+        IsLoading = true;
+        ErrorMessage = null;
+        Files = new List<SharePointFile>();
+
+        try
+        {
+            var file = e.File;
+            if (file == null) return;
+
+            using var stream = file.OpenReadStream(maxAllowedSize: 10485760); // 10 MB limit
+            using var reader = new StreamReader(stream);
+            
+            var content = await reader.ReadToEndAsync();
+            var lines = content.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            
+            if (lines.Length <= 1)
+            {
+                ErrorMessage = "CSV file is empty or contains only headers.";
+                return;
+            }
+
+            // Assuming CSV format: Name, Size, LastModified, PreviewUrl
+            // Skip header (i = 1)
+            for (int i = 1; i < lines.Length; i++)
+            {
+                var cols = lines[i].Split(',');
+                if (cols.Length >= 1)
+                {
+                    var spFile = new SharePointFile
+                    {
+                        Name = cols[0].Trim(),
+                        Size = cols.Length > 1 && long.TryParse(cols[1].Trim(), out var size) ? size : 0,
+                        LastModifiedDateTime = cols.Length > 2 && DateTimeOffset.TryParse(cols[2].Trim(), out var date) ? date : null,
+                        PreviewUrl = cols.Length > 3 ? cols[3].Trim() : null
+                    };
+                    Files.Add(spFile);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = $"Error reading CSV: {ex.Message}";
+        }
+        finally
+        {
+            IsLoading = false;
+        }
+    }
+}
