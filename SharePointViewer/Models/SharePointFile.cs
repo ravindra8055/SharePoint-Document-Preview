@@ -6,4 +6,5 @@ public class SharePointFile
     public long Size { get; set; }
     public DateTimeOffset? LastModifiedDateTime { get; set; }
     public string? PreviewUrl { get; set; }
+    public string? EmbedUrl { get; set; }
 }

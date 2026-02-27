@@ -44,7 +44,7 @@
             else
             {
                 <div class="mb-3">
-                    <label for="csvFile" class="form-label">Upload CSV File (Format: Name, Size, LastModified, PreviewUrl)</label>
+                    <label for="csvFile" class="form-label">Upload CSV File (Format: Name, Size, LastModified, PreviewUrl, EmbedUrl)</label>
                     <InputFile class="form-control" id="csvFile" OnChange="HandleCsvUpload" accept=".csv" />
                 </div>
                 @if (IsLoading)
@@ -93,11 +93,17 @@
                                         <td>@file.Size.ToString("N0")</td>
                                         <td>@(file.LastModifiedDateTime?.ToString("g") ?? "N/A")</td>
                                         <td>
-                                            @if (!string.IsNullOrWhiteSpace(file.PreviewUrl))
+                                            @if (!string.IsNullOrWhiteSpace(file.PreviewUrl) || !string.IsNullOrWhiteSpace(file.EmbedUrl))
                                             {
                                                 <div class="btn-group" role="group">
-                                                    <a href="@file.PreviewUrl" target="_blank" class="btn btn-sm btn-outline-primary">Open Tab</a>
-                                                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => ShowInlinePreview(file.PreviewUrl)">Inline</button>
+                                                    @if (!string.IsNullOrWhiteSpace(file.PreviewUrl))
+                                                    {
+                                                        <a href="@file.PreviewUrl" target="_blank" class="btn btn-sm btn-outline-primary">Open Tab</a>
+                                                    }
+                                                    @if (!string.IsNullOrWhiteSpace(file.EmbedUrl))
+                                                    {
+                                                        <button class="btn btn-sm btn-outline-secondary" @onclick="() => ShowInlinePreview(file.EmbedUrl)">Inline</button>
+                                                    }
                                                 </div>
                                             }
                                         </td>
@@ -196,7 +202,7 @@
                 return;
             }
 
-            // Assuming CSV format: Name, Size, LastModified, PreviewUrl
+            // Assuming CSV format: Name, Size, LastModified, PreviewUrl, EmbedUrl
             // Skip header (i = 1)
             for (int i = 1; i < lines.Length; i++)
             {
@@ -208,7 +214,8 @@
                         Name = cols[0].Trim(),
                         Size = cols.Length > 1 && long.TryParse(cols[1].Trim(), out var size) ? size : 0,
                         LastModifiedDateTime = cols.Length > 2 && DateTimeOffset.TryParse(cols[2].Trim(), out var date) ? date : null,
-                        PreviewUrl = cols.Length > 3 ? cols[3].Trim() : null
+                        PreviewUrl = cols.Length > 3 ? cols[3].Trim() : null,
+                        EmbedUrl = cols.Length > 4 ? cols[4].Trim() : null
                     };
                     Files.Add(spFile);
                 }
