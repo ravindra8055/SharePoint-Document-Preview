@@ -139,9 +139,12 @@ public class SharePointService
                     {
                         files.Add(new SharePointFile
                         {
+                            Id = child.Id,
+                            DriveId = driveId,
                             Name = child.Name ?? "Unknown",
                             Size = child.Size ?? 0,
-                            LastModifiedDateTime = child.LastModifiedDateTime
+                            LastModifiedDateTime = child.LastModifiedDateTime,
+                            PreviewUrl = child.WebUrl
                         });
                     }
                 }
@@ -153,5 +156,26 @@ public class SharePointService
         }
 
         return files;
+    }
+
+    public async Task<string?> GetFilePreviewUrlAsync(string driveId, string itemId)
+    {
+        if (_graphClient == null) return null;
+
+        try
+        {
+            var requestBody = new Microsoft.Graph.Drives.Item.Items.Item.Preview.PreviewPostRequestBody
+            {
+                Viewer = "default"
+            };
+
+            var result = await _graphClient.Drives[driveId].Items[itemId].Preview.PostAsync(requestBody);
+            return result?.GetUrl;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error getting preview URL from Graph API: {ex.Message}");
+            return null;
+        }
     }
 }

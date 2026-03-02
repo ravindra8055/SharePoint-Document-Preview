@@ -2,6 +2,8 @@ namespace SharePointViewer.Models;
 
 public class SharePointFile
 {
+    public string? Id { get; set; }
+    public string? DriveId { get; set; }
     public string Name { get; set; } = string.Empty;
     public long Size { get; set; }
     public DateTimeOffset? LastModifiedDateTime { get; set; }

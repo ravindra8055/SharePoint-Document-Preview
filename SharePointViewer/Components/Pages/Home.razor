@@ -93,16 +93,16 @@
                                         <td>@file.Size.ToString("N0")</td>
                                         <td>@(file.LastModifiedDateTime?.ToString("g") ?? "N/A")</td>
                                         <td>
-                                            @if (!string.IsNullOrWhiteSpace(file.PreviewUrl) || !string.IsNullOrWhiteSpace(file.EmbedUrl))
+                                            @if (!string.IsNullOrWhiteSpace(file.PreviewUrl) || !string.IsNullOrWhiteSpace(file.EmbedUrl) || (!string.IsNullOrEmpty(file.Id) && !string.IsNullOrEmpty(file.DriveId)))
                                             {
                                                 <div class="btn-group" role="group">
                                                     @if (!string.IsNullOrWhiteSpace(file.PreviewUrl))
                                                     {
                                                         <a href="@file.PreviewUrl" target="_blank" class="btn btn-sm btn-outline-primary">Open Tab</a>
                                                     }
-                                                    @if (!string.IsNullOrWhiteSpace(file.EmbedUrl))
+                                                    @if (!string.IsNullOrWhiteSpace(file.EmbedUrl) || (!string.IsNullOrEmpty(file.Id) && !string.IsNullOrEmpty(file.DriveId)))
                                                     {
-                                                        <button class="btn btn-sm btn-outline-secondary" @onclick="() => ShowInlinePreview(file.EmbedUrl)">Inline</button>
+                                                        <button class="btn btn-sm btn-outline-secondary" @onclick="() => ShowInlinePreview(file)" disabled="@IsLoadingPreview">Inline</button>
                                                     }
                                                 </div>
                                             }
@@ -116,7 +116,7 @@
             }
         </div>
 
-        @if (!string.IsNullOrEmpty(InlinePreviewUrl))
+        @if (!string.IsNullOrEmpty(InlinePreviewUrl) || IsLoadingPreview)
         {
             <div class="col-md-6">
                 <div class="card h-100">
@@ -124,8 +124,20 @@
                         <h5 class="mb-0">Document Preview</h5>
                         <button type="button" class="btn-close" aria-label="Close" @onclick="CloseInlinePreview"></button>
                     </div>
-                    <div class="card-body p-0" style="min-height: 500px;">
-                        <iframe src="@InlinePreviewUrl" style="width: 100%; height: 100%; border: none; min-height: 500px;" allowfullscreen></iframe>
+                    <div class="card-body p-0 d-flex justify-content-center align-items-center" style="min-height: 500px;">
+                        @if (IsLoadingPreview)
+                        {
+                            <div class="text-center p-5">
+                                <div class="spinner-border text-primary" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                                <p class="mt-2">Generating secure preview link...</p>
+                            </div>
+                        }
+                        else if (!string.IsNullOrEmpty(InlinePreviewUrl))
+                        {
+                            <iframe src="@InlinePreviewUrl" style="width: 100%; height: 100%; border: none; min-height: 500px;" allowfullscreen></iframe>
+                        }
                     </div>
                 </div>
             </div>
@@ -138,17 +150,48 @@
     private string FolderUrl { get; set; } = string.Empty;
     private List<SharePointFile>? Files { get; set; }
     private bool IsLoading { get; set; }
+    private bool IsLoadingPreview { get; set; }
     private string? ErrorMessage { get; set; }
     private string? InlinePreviewUrl { get; set; }
 
-    private void ShowInlinePreview(string url)
+    private async Task ShowInlinePreview(SharePointFile file)
     {
-        InlinePreviewUrl = url;
+        InlinePreviewUrl = null;
+        ErrorMessage = null;
+        
+        if (!string.IsNullOrEmpty(file.DriveId) && !string.IsNullOrEmpty(file.Id))
+        {
+            IsLoadingPreview = true;
+            StateHasChanged(); // Force UI update to show spinner
+            
+            var tempUrl = await SharePointService.GetFilePreviewUrlAsync(file.DriveId, file.Id);
+            
+            if (!string.IsNullOrEmpty(tempUrl))
+            {
+                InlinePreviewUrl = tempUrl;
+            }
+            else if (!string.IsNullOrEmpty(file.EmbedUrl))
+            {
+                // Fallback to static EmbedUrl if Graph API fails but we have one
+                InlinePreviewUrl = file.EmbedUrl;
+            }
+            else
+            {
+                ErrorMessage = "Failed to generate a secure preview URL from SharePoint.";
+            }
+            
+            IsLoadingPreview = false;
+        }
+        else if (!string.IsNullOrEmpty(file.EmbedUrl))
+        {
+            InlinePreviewUrl = file.EmbedUrl;
+        }
     }
 
     private void CloseInlinePreview()
     {
         InlinePreviewUrl = null;
+        IsLoadingPreview = false;
     }
 
     private async Task LoadFiles()

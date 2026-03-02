@@ -9,6 +9,7 @@ A .NET 8 Blazor Server application designed to interface with a SharePoint Onlin
 * **Data Grid**: Displays files with exactly three columns: File Name, File Size (Bytes), and Last Modified Date.
 * **CSV Fallback**: Allows users to upload a CSV file containing file data if the SharePoint connection is unavailable.
 * **Document Preview**: Includes an action button in the grid to open a document's preview URL in a new tab or inline via an iframe.
+* **Secure Inline Previews**: Uses the Microsoft Graph API `preview` endpoint to generate short-lived, embeddable URLs for SharePoint files, bypassing standard SharePoint iframe restrictions.
 
 ## Prerequisites
 
@@ -31,6 +32,15 @@ dotnet run
 
 Open your browser and navigate to the localhost URL provided in the terminal output.
 
+## IIS Deployment Troubleshooting
+
+If you publish this application to IIS and encounter the error: **"The Requested page cannot be accessed because the related configuration data for the page is invalid"**, it means IIS does not recognize the `AspNetCoreModuleV2` module in your `web.config` file.
+
+**To fix this:**
+1. Download and install the **.NET 8 Hosting Bundle** on the Windows Server running IIS. You can download it from the official Microsoft .NET 8 download page (look for "ASP.NET Core Runtime" -> "Hosting Bundle").
+2. After installation, open an Administrator Command Prompt and run `iisreset` to restart IIS and load the new module.
+3. Ensure your IIS Application Pool for this site is set to **"No Managed Code"** (since .NET Core/.NET 8 manages its own process).
+
 ## CSV Fallback Format
 
 To use the CSV fallback feature, ensure your CSV file includes a header row and follows this exact column structure:
@@ -43,15 +53,20 @@ Budget_2024.xlsx,512000,2023-11-01T09:15:00Z,https://contoso.sharepoint.com/.../
 
 ### ⚠️ Important: "SharePoint refused to connect" in Iframe
 
-By default, SharePoint Online blocks external websites from embedding its pages inside an `iframe` to prevent clickjacking attacks (using `X-Frame-Options: SAMEORIGIN`). If you use a standard SharePoint URL in your CSV, the inline preview will fail to load.
+If you are getting a "refused to connect" error in the iframe, it is almost certainly caused by **Authentication Redirects and Third-Party Cookie Blocking**.
+
+*(Note: The SharePoint "HTML Field Security" setting is actually for allowing external sites to be embedded INSIDE SharePoint, not the other way around. It will not fix this issue).*
+
+**The Root Cause:**
+When the iframe tries to load the SharePoint `EmbedUrl`, it needs to know who you are. If your browser blocks **Third-Party Cookies** (which is the default in Incognito mode, Safari, and increasingly in Chrome/Edge), the iframe cannot read your SharePoint login cookie. 
+Because it thinks you aren't logged in, SharePoint redirects the iframe to the Microsoft Login page (`login.microsoftonline.com`). **Microsoft strictly blocks its login page from being loaded inside an iframe** to prevent credential theft. The browser blocks the login page, resulting in the "refused to connect" error.
 
 **How to fix this:**
-You must use SharePoint's specific **Embed URL** format for the `EmbedUrl` column. 
 
-1. Go to your SharePoint document library in the browser.
-2. Open the document (Word, Excel, PowerPoint, PDF).
-3. Click **File** > **Share** > **Embed**.
-4. Look at the provided Embed Code and copy the URL inside the `src="..."` attribute.
-5. It will look something like this: `https://[tenant].sharepoint.com/sites/[site]/_layouts/15/Doc.aspx?sourcedoc={id}&action=embedview`
+**Solution 1: Enable Third-Party Cookies in your Browser**
+For the iframe to authenticate you silently, you must allow third-party cookies for the site.
+* **Chrome**: Go to Settings > Privacy and security > Third-party cookies > Select "Allow third-party cookies" (or add your SharePoint tenant and your app's domain to the allowed list).
+* **Edge**: Go to Settings > Cookies and site permissions > Manage and delete cookies and site data > Turn off "Block third-party cookies".
 
-Using URLs with `&action=embedview` signals to SharePoint that the document is being embedded, and it will relax the framing restrictions (provided the user viewing the app is logged into their Microsoft 365 account in that browser).
+**Solution 2: Use an Anonymous "Anyone with the link" URL**
+If your organization allows anonymous sharing, generate an "Anyone with the link can view" link for the document. Open that link in an Incognito window, click "Embed", and use *that* URL in your CSV. Because it doesn't require login, it won't redirect to the blocked Microsoft login page.
