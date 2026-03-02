@@ -166,7 +166,8 @@ public class SharePointService
         {
             var requestBody = new Microsoft.Graph.Drives.Item.Items.Item.Preview.PreviewPostRequestBody
             {
-                Viewer = "default"
+                // In newer Microsoft.Graph SDKs, the Viewer property might be an enum or not exist.
+                // If it doesn't exist, we can just pass an empty body to get the default preview.
             };
 
             var result = await _graphClient.Drives[driveId].Items[itemId].Preview.PostAsync(requestBody);
