@@ -179,4 +179,47 @@ public class SharePointService
             return null;
         }
     }
+
+    /// <summary>
+    /// Converts a standard SharePoint URL into a Microsoft Graph encoded sharing token.
+    /// </summary>
+    private string EncodeSharePointUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return string.Empty;
+
+        // Base64 encode the UTF8 bytes of the URL
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(url);
+        string base64 = Convert.ToBase64String(bytes);
+
+        // Remove any trailing '=' characters, replace '/' with '_', replace '+' with '-', and prepend "u!"
+        return "u!" + base64.TrimEnd('=').Replace('/', '_').Replace('+', '-');
+    }
+
+    /// <summary>
+    /// Generates a temporary, pre-authenticated embed URL using the Graph API Shares endpoint.
+    /// </summary>
+    public async Task<string?> GetPreviewUrlFromSharePointUrlAsync(string sharePointUrl)
+    {
+        if (_graphClient == null) return null;
+
+        try
+        {
+            string encodedUrl = EncodeSharePointUrl(sharePointUrl);
+
+            var requestBody = new Microsoft.Graph.Shares.Item.DriveItem.Preview.PreviewPostRequestBody();
+
+            var result = await _graphClient.Shares[encodedUrl].DriveItem.Preview.PostAsync(requestBody);
+            return result?.GetUrl;
+        }
+        catch (Microsoft.Graph.Models.ODataErrors.ODataError ex) when (ex.ResponseStatusCode == 404)
+        {
+            Console.WriteLine($"File not found (404) for URL: {sharePointUrl}");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error getting preview URL from Graph API for shared URL: {ex.Message}");
+            return null;
+        }
+    }
 }
