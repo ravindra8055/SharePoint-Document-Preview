@@ -206,9 +206,23 @@ public class SharePointService
         {
             string encodedUrl = EncodeSharePointUrl(sharePointUrl);
 
-            var requestBody = new Microsoft.Graph.Shares.Item.DriveItem.Preview.PreviewPostRequestBody();
+            // 1. Get the DriveItem to resolve its DriveId and ItemId
+            // The Graph SDK v5 does not expose .Preview directly on Shares[...].DriveItem
+            var driveItem = await _graphClient.Shares[encodedUrl].DriveItem.GetAsync();
 
-            var result = await _graphClient.Shares[encodedUrl].DriveItem.Preview.PostAsync(requestBody);
+            if (driveItem?.ParentReference?.DriveId == null || driveItem?.Id == null)
+            {
+                Console.WriteLine("Could not resolve DriveId or ItemId from the shared URL.");
+                return null;
+            }
+
+            // 2. Call the Preview endpoint using the standard Drives path
+            var requestBody = new Microsoft.Graph.Drives.Item.Items.Item.Preview.PreviewPostRequestBody();
+
+            var result = await _graphClient.Drives[driveItem.ParentReference.DriveId]
+                                           .Items[driveItem.Id]
+                                           .Preview
+                                           .PostAsync(requestBody);
             return result?.GetUrl;
         }
         catch (Microsoft.Graph.Models.ODataErrors.ODataError ex) when (ex.ResponseStatusCode == 404)
