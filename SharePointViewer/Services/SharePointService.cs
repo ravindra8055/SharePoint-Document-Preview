@@ -130,16 +130,22 @@ public class SharePointService
             var authProvider = GetPnPAuthenticationProvider(folderUrl);
             using var context = await _pnpContextFactory.CreateAsync(new Uri(siteUrl), authProvider);
 
-            // 2. Get the folder and its files using PnP Core, explicitly requesting VroomItemId and VroomDriveId
+            // 2. Get the folder and its files using PnP Core
             var folder = await context.Web.GetFolderByServerRelativeUrlAsync(folderRelativeUrl, 
                 f => f.Files.QueryProperties(
-                    file => file.VroomItemId,
-                    file => file.VroomDriveId,
                     file => file.Name,
                     file => file.Length,
                     file => file.TimeLastModified,
                     file => file.ServerRelativeUrl
                 ));
+
+            // 3. Batch load Vroom properties for all files to avoid the "property not loaded" error
+            var batch = context.NewBatch();
+            foreach (var file in folder.Files)
+            {
+                file.LoadBatch(batch, f => f.VroomItemId, f => f.VroomDriveId);
+            }
+            await context.ExecuteAsync(batch);
 
             foreach (var file in folder.Files)
             {
