@@ -164,7 +164,7 @@
             IsLoadingPreview = true;
             StateHasChanged(); // Force UI update to show spinner
             
-            var tempUrl = await SharePointService.GetFilePreviewUrlAsync(file.DriveId, file.Id, FolderUrl);
+            var tempUrl = await SharePointService.GetPreviewUrlFromSharePointUrlAsync(file.PreviewUrl ?? string.Empty);
             
             if (!string.IsNullOrEmpty(tempUrl))
             {
