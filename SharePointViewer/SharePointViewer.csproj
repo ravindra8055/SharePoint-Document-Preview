@@ -9,7 +9,7 @@
   <ItemGroup>
     <PackageReference Include="Azure.Identity" Version="1.10.4" />
     <PackageReference Include="Microsoft.Graph" Version="5.42.0" />
-    <PackageReference Include="Microsoft.Identity.Client" Version="4.59.0" />
+    <PackageReference Include="Microsoft.Identity.Client" Version="4.61.3" />
     <PackageReference Include="PnP.Core" Version="1.14.0" />
     <PackageReference Include="PnP.Core.Auth" Version="1.14.0" />
   </ItemGroup>

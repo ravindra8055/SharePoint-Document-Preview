@@ -130,8 +130,16 @@ public class SharePointService
             var authProvider = GetPnPAuthenticationProvider(folderUrl);
             using var context = await _pnpContextFactory.CreateAsync(new Uri(siteUrl), authProvider);
 
-            // 2. Get the folder and its files using PnP Core
-            var folder = await context.Web.GetFolderByServerRelativeUrlAsync(folderRelativeUrl, f => f.Files);
+            // 2. Get the folder and its files using PnP Core, explicitly requesting VroomItemId and VroomDriveId
+            var folder = await context.Web.GetFolderByServerRelativeUrlAsync(folderRelativeUrl, 
+                f => f.Files.QueryProperties(
+                    file => file.VroomItemId,
+                    file => file.VroomDriveId,
+                    file => file.Name,
+                    file => file.Length,
+                    file => file.TimeLastModified,
+                    file => file.ServerRelativeUrl
+                ));
 
             foreach (var file in folder.Files)
             {
