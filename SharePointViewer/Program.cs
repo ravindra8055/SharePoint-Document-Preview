@@ -10,6 +10,7 @@ builder.Services.AddRazorComponents()
 
 builder.Services.AddControllers();
 
+builder.Services.AddPnPCore();
 builder.Services.AddSingleton<SharePointService>();
 
 var app = builder.Build();

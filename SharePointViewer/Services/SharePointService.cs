@@ -1,176 +1,166 @@
 using Azure.Identity;
 using Microsoft.Graph;
 using Microsoft.Graph.Models;
+using PnP.Core.Auth;
+using PnP.Core.Services;
 using SharePointViewer.Models;
+using System.Security;
 
 namespace SharePointViewer.Services;
 
 public class SharePointService
 {
-    private readonly GraphServiceClient? _graphClient;
-    private readonly string? _initErrorMessage;
+    private readonly IPnPContextFactory _pnpContextFactory;
+    private readonly IConfiguration _configuration;
 
-    public SharePointService(IConfiguration configuration)
+    public SharePointService(IConfiguration configuration, IPnPContextFactory pnpContextFactory)
     {
+        _configuration = configuration;
+        _pnpContextFactory = pnpContextFactory;
+    }
+
+    /// <summary>
+    /// Infers the Tenant ID (e.g., contoso.onmicrosoft.com) from the SharePoint URL (e.g., contoso.sharepoint.com).
+    /// This mimics how PnP PowerShell connects without needing an explicit Tenant ID.
+    /// </summary>
+    private string GetTenantIdFromUrl(string url)
+    {
+        var configuredTenant = _configuration["SharePointAuth:TenantId"];
+        if (!string.IsNullOrWhiteSpace(configuredTenant) && configuredTenant != "YOUR_TENANT_ID")
+        {
+            return configuredTenant;
+        }
+
+        if (string.IsNullOrWhiteSpace(url)) return "organizations";
+
         try
         {
-            var authType = configuration["SharePointAuth:AuthType"];
-            var tenantId = configuration["SharePointAuth:TenantId"];
-            var clientId = configuration["SharePointAuth:ClientId"];
-            var scopes = new[] { "https://graph.microsoft.com/.default" };
-
-            if (string.Equals(authType, "UsernamePassword", StringComparison.OrdinalIgnoreCase))
+            var uri = new Uri(url);
+            if (uri.Host.EndsWith(".sharepoint.com", StringComparison.OrdinalIgnoreCase))
             {
-                var username = configuration["SharePointAuth:Username"];
-                var password = configuration["SharePointAuth:Password"];
-
-                var options = new UsernamePasswordCredentialOptions
-                {
-                    AuthorityHost = AzureAuthorityHosts.AzurePublicCloud,
-                };
-
-                var usernamePasswordCredential = new UsernamePasswordCredential(
-                    username, password, tenantId, clientId, options);
-
-                _graphClient = new GraphServiceClient(usernamePasswordCredential, scopes);
-            }
-            else
-            {
-                var clientSecret = configuration["SharePointAuth:ClientSecret"];
-
-                var options = new ClientSecretCredentialOptions
-                {
-                    AuthorityHost = AzureAuthorityHosts.AzurePublicCloud,
-                };
-
-                var clientSecretCredential = new ClientSecretCredential(
-                    tenantId, clientId, clientSecret, options);
-
-                _graphClient = new GraphServiceClient(clientSecretCredential, scopes);
+                return uri.Host.Replace(".sharepoint.com", ".onmicrosoft.com", StringComparison.OrdinalIgnoreCase);
             }
         }
-        catch (Exception ex)
+        catch
         {
-            _initErrorMessage = ex.Message;
+            // Ignore invalid URI, fallback to organizations
+        }
+        
+        return "organizations"; // Fallback for MSAL
+    }
+
+    private GraphServiceClient GetGraphClient(string url)
+    {
+        var authType = _configuration["SharePointAuth:AuthType"];
+        var tenantId = GetTenantIdFromUrl(url);
+        var clientId = _configuration["SharePointAuth:ClientId"];
+        var scopes = new[] { "https://graph.microsoft.com/.default" };
+
+        if (string.Equals(authType, "UsernamePassword", StringComparison.OrdinalIgnoreCase))
+        {
+            var username = _configuration["SharePointAuth:Username"];
+            var password = _configuration["SharePointAuth:Password"];
+
+            var options = new UsernamePasswordCredentialOptions { AuthorityHost = AzureAuthorityHosts.AzurePublicCloud };
+            var cred = new UsernamePasswordCredential(username, password, tenantId, clientId, options);
+            return new GraphServiceClient(cred, scopes);
+        }
+        else
+        {
+            var clientSecret = _configuration["SharePointAuth:ClientSecret"];
+            var options = new ClientSecretCredentialOptions { AuthorityHost = AzureAuthorityHosts.AzurePublicCloud };
+            var cred = new ClientSecretCredential(tenantId, clientId, clientSecret, options);
+            return new GraphServiceClient(cred, scopes);
+        }
+    }
+
+    private IAuthenticationProvider GetPnPAuthenticationProvider(string url)
+    {
+        var authType = _configuration["SharePointAuth:AuthType"];
+        var tenantId = GetTenantIdFromUrl(url);
+        var clientId = _configuration["SharePointAuth:ClientId"];
+
+        if (string.Equals(authType, "UsernamePassword", StringComparison.OrdinalIgnoreCase))
+        {
+            var username = _configuration["SharePointAuth:Username"];
+            var password = _configuration["SharePointAuth:Password"];
+
+            var securePassword = new SecureString();
+            if (!string.IsNullOrEmpty(password))
+            {
+                foreach (char c in password) securePassword.AppendChar(c);
+            }
+
+            return new UsernamePasswordAuthenticationProvider(clientId, tenantId, username, securePassword);
+        }
+        else
+        {
+            var clientSecret = _configuration["SharePointAuth:ClientSecret"];
+            var credential = new ClientSecretCredential(tenantId, clientId, clientSecret);
+            return new ExternalAuthenticationProvider((resource, scopes) => 
+            {
+                var tokenRequestContext = new Azure.Core.TokenRequestContext(scopes);
+                var token = credential.GetToken(tokenRequestContext);
+                return Task.FromResult(token.Token);
+            });
         }
     }
 
     public async Task<List<SharePointFile>> GetFilesInFolderAsync(string folderUrl)
     {
-        if (_graphClient == null)
-        {
-            throw new Exception($"SharePoint client is not configured correctly. Please check appsettings.json credentials. Error: {_initErrorMessage}");
-        }
-
         var files = new List<SharePointFile>();
 
         try
         {
-            // Parse the URL to get the hostname, site path, and folder path
             var uri = new Uri(folderUrl);
             var hostname = uri.Host;
-            
-            // Example URL: https://contoso.sharepoint.com/sites/MySite/Shared%20Documents/MyFolder
             var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
             
             if (segments.Length < 3)
-                throw new ArgumentException("Invalid SharePoint folder URL format. Expected format: https://[tenant].sharepoint.com/sites/[site]/[library]/[folder]");
+                throw new ArgumentException("Invalid SharePoint folder URL format.");
 
-            string sitePath = string.Empty;
-            int listStartIndex = 0;
+            string sitePath = (segments[0].Equals("sites", StringComparison.OrdinalIgnoreCase) || segments[0].Equals("teams", StringComparison.OrdinalIgnoreCase))
+                ? $"/{segments[0]}/{segments[1]}"
+                : "/";
 
-            if (segments[0].Equals("sites", StringComparison.OrdinalIgnoreCase) || 
-                segments[0].Equals("teams", StringComparison.OrdinalIgnoreCase))
+            string siteUrl = $"https://{hostname}{sitePath}";
+            string folderRelativeUrl = uri.AbsolutePath;
+
+            // 1. Create PnP Context using the dynamically resolved Tenant ID
+            var authProvider = GetPnPAuthenticationProvider(folderUrl);
+            using var context = await _pnpContextFactory.CreateAsync(new Uri(siteUrl), authProvider);
+
+            // 2. Get the folder and its files using PnP Core
+            var folder = await context.Web.GetFolderByServerRelativeUrlAsync(folderRelativeUrl, f => f.Files);
+
+            foreach (var file in folder.Files)
             {
-                sitePath = $"/{segments[0]}/{segments[1]}";
-                listStartIndex = 2;
-            }
-            else
-            {
-                sitePath = "/";
-                listStartIndex = 0;
-            }
-
-            // Get the site
-            var site = await _graphClient.Sites[$"{hostname}:{sitePath}"].GetAsync();
-            if (site == null) throw new Exception("Site not found.");
-
-            // Get all drives (document libraries) in the site
-            var drives = await _graphClient.Sites[site.Id].Drives.GetAsync();
-            if (drives?.Value == null) throw new Exception("No document libraries found.");
-
-            // Find the drive and folder
-            string itemPath = string.Join('/', segments.Skip(listStartIndex));
-            itemPath = Uri.UnescapeDataString(itemPath);
-
-            DriveItem? folderItem = null;
-            string? driveId = null;
-
-            foreach (var drive in drives.Value)
-            {
-                try
+                files.Add(new SharePointFile
                 {
-                    var item = await _graphClient.Drives[drive.Id].Root.ItemWithPath(itemPath).GetAsync();
-                    if (item != null)
-                    {
-                        folderItem = item;
-                        driveId = drive.Id;
-                        break;
-                    }
-                }
-                catch (Microsoft.Graph.Models.ODataErrors.ODataError ex) when (ex.ResponseStatusCode == 404)
-                {
-                    // Ignore 404, try next drive
-                }
-            }
-
-            if (folderItem == null || driveId == null)
-                throw new Exception("Folder not found in any document library.");
-
-            // Get children of the folder
-            var children = await _graphClient.Drives[driveId].Items[folderItem.Id].Children.GetAsync();
-
-            if (children?.Value != null)
-            {
-                foreach (var child in children.Value)
-                {
-                    // Only include files, not folders
-                    if (child.File != null)
-                    {
-                        files.Add(new SharePointFile
-                        {
-                            Id = child.Id,
-                            DriveId = driveId,
-                            Name = child.Name ?? "Unknown",
-                            Size = child.Size ?? 0,
-                            LastModifiedDateTime = child.LastModifiedDateTime,
-                            PreviewUrl = child.WebUrl
-                        });
-                    }
-                }
+                    Id = file.VroomItemId,
+                    DriveId = file.VroomDriveId,
+                    Name = file.Name,
+                    Size = file.Length,
+                    LastModifiedDateTime = file.TimeLastModified,
+                    PreviewUrl = file.ServerRelativeUrl // Fallback
+                });
             }
         }
         catch (Exception ex)
         {
-            throw new Exception($"Error retrieving files: {ex.Message}", ex);
+            throw new Exception($"Error retrieving files using PnP Core: {ex.Message}", ex);
         }
 
         return files;
     }
 
-    public async Task<string?> GetFilePreviewUrlAsync(string driveId, string itemId)
+    public async Task<string?> GetFilePreviewUrlAsync(string driveId, string itemId, string siteUrl)
     {
-        if (_graphClient == null) return null;
-
         try
         {
-            var requestBody = new Microsoft.Graph.Drives.Item.Items.Item.Preview.PreviewPostRequestBody
-            {
-                // In newer Microsoft.Graph SDKs, the Viewer property might be an enum or not exist.
-                // If it doesn't exist, we can just pass an empty body to get the default preview.
-            };
-
-            var result = await _graphClient.Drives[driveId].Items[itemId].Preview.PostAsync(requestBody);
+            var graphClient = GetGraphClient(siteUrl);
+            var requestBody = new Microsoft.Graph.Drives.Item.Items.Item.Preview.PreviewPostRequestBody();
+            var result = await graphClient.Drives[driveId].Items[itemId].Preview.PostAsync(requestBody);
             return result?.GetUrl;
         }
         catch (Exception ex)
@@ -180,46 +170,27 @@ public class SharePointService
         }
     }
 
-    /// <summary>
-    /// Converts a standard SharePoint URL into a Microsoft Graph encoded sharing token.
-    /// </summary>
     private string EncodeSharePointUrl(string url)
     {
         if (string.IsNullOrWhiteSpace(url)) return string.Empty;
-
-        // Base64 encode the UTF8 bytes of the URL
         byte[] bytes = System.Text.Encoding.UTF8.GetBytes(url);
         string base64 = Convert.ToBase64String(bytes);
-
-        // Remove any trailing '=' characters, replace '/' with '_', replace '+' with '-', and prepend "u!"
         return "u!" + base64.TrimEnd('=').Replace('/', '_').Replace('+', '-');
     }
 
-    /// <summary>
-    /// Generates a temporary, pre-authenticated embed URL using the Graph API Shares endpoint.
-    /// </summary>
     public async Task<string?> GetPreviewUrlFromSharePointUrlAsync(string sharePointUrl)
     {
-        if (_graphClient == null) return null;
-
         try
         {
+            var graphClient = GetGraphClient(sharePointUrl);
             string encodedUrl = EncodeSharePointUrl(sharePointUrl);
-
-            // 1. Get the DriveItem to resolve its DriveId and ItemId
-            // The Graph SDK v5 does not expose .Preview directly on Shares[...].DriveItem
-            var driveItem = await _graphClient.Shares[encodedUrl].DriveItem.GetAsync();
+            var driveItem = await graphClient.Shares[encodedUrl].DriveItem.GetAsync();
 
             if (driveItem?.ParentReference?.DriveId == null || driveItem?.Id == null)
-            {
-                Console.WriteLine("Could not resolve DriveId or ItemId from the shared URL.");
                 return null;
-            }
 
-            // 2. Call the Preview endpoint using the standard Drives path
             var requestBody = new Microsoft.Graph.Drives.Item.Items.Item.Preview.PreviewPostRequestBody();
-
-            var result = await _graphClient.Drives[driveItem.ParentReference.DriveId]
+            var result = await graphClient.Drives[driveItem.ParentReference.DriveId]
                                            .Items[driveItem.Id]
                                            .Preview
                                            .PostAsync(requestBody);
@@ -227,12 +198,10 @@ public class SharePointService
         }
         catch (Microsoft.Graph.Models.ODataErrors.ODataError ex) when (ex.ResponseStatusCode == 404)
         {
-            Console.WriteLine($"File not found (404) for URL: {sharePointUrl}");
             return null;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error getting preview URL from Graph API for shared URL: {ex.Message}");
             return null;
         }
     }
