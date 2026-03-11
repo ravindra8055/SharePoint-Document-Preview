@@ -3,6 +3,7 @@
 @using SharePointViewer.Models
 @using SharePointViewer.Services
 @inject SharePointService SharePointService
+@inject IJSRuntime JSRuntime
 @rendermode InteractiveServer
 
 <PageTitle>SharePoint Folder Viewer</PageTitle>
@@ -98,7 +99,7 @@
                                                 <div class="btn-group" role="group">
                                                     @if (!string.IsNullOrWhiteSpace(file.PreviewUrl))
                                                     {
-                                                        <a href="@file.PreviewUrl" target="_blank" class="btn btn-sm btn-outline-primary">Open Tab</a>
+                                                        <button class="btn btn-sm btn-outline-primary" @onclick="() => OpenInPopup(file.PreviewUrl)">Open Popup</button>
                                                     }
                                                     @if (!string.IsNullOrWhiteSpace(file.EmbedUrl) || (!string.IsNullOrEmpty(file.Id) && !string.IsNullOrEmpty(file.DriveId)))
                                                     {
@@ -122,7 +123,15 @@
                 <div class="card h-100">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h5 class="mb-0">Document Preview</h5>
-                        <button type="button" class="btn-close" aria-label="Close" @onclick="CloseInlinePreview"></button>
+                        <div>
+                            @if (CurrentPreviewFile != null && !IsLoadingPreview && InlinePreviewUrl != CurrentPreviewFile.EmbedUrl)
+                            {
+                                <button type="button" class="btn btn-sm btn-outline-primary me-2" @onclick="SwitchToNativePreview" title="Click this if the preview is showing an error">
+                                    <i class="bi bi-arrow-repeat"></i> Fix Preview
+                                </button>
+                            }
+                            <button type="button" class="btn-close" aria-label="Close" @onclick="CloseInlinePreview"></button>
+                        </div>
                     </div>
                     <div class="card-body p-0 d-flex justify-content-center align-items-center" style="min-height: 500px;">
                         @if (IsLoadingPreview)
@@ -153,11 +162,22 @@
     private bool IsLoadingPreview { get; set; }
     private string? ErrorMessage { get; set; }
     private string? InlinePreviewUrl { get; set; }
+    private SharePointFile? CurrentPreviewFile { get; set; }
+
+    private async Task OpenInPopup(string url)
+    {
+        if (!string.IsNullOrEmpty(url))
+        {
+            // Opens a popup window with specific features (no toolbars, no menus, just the address bar and content)
+            await JSRuntime.InvokeVoidAsync("open", url, "_blank", "width=1024,height=768,menubar=no,toolbar=no,location=yes,status=no,resizable=yes,scrollbars=yes");
+        }
+    }
 
     private async Task ShowInlinePreview(SharePointFile file)
     {
         InlinePreviewUrl = null;
         ErrorMessage = null;
+        CurrentPreviewFile = file;
         
         if (!string.IsNullOrEmpty(file.DriveId) && !string.IsNullOrEmpty(file.Id))
         {
@@ -188,10 +208,19 @@
         }
     }
 
+    private void SwitchToNativePreview()
+    {
+        if (CurrentPreviewFile != null && !string.IsNullOrEmpty(CurrentPreviewFile.EmbedUrl))
+        {
+            InlinePreviewUrl = CurrentPreviewFile.EmbedUrl;
+        }
+    }
+
     private void CloseInlinePreview()
     {
         InlinePreviewUrl = null;
         IsLoadingPreview = false;
+        CurrentPreviewFile = null;
     }
 
     private async Task LoadFiles()
