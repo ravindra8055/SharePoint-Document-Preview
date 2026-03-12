@@ -45,7 +45,7 @@
             else
             {
                 <div class="mb-3">
-                    <label for="csvFile" class="form-label">Upload CSV File (Format: Name, Size, LastModified, PreviewUrl, EmbedUrl)</label>
+                    <label for="csvFile" class="form-label">Upload CSV File (Format: Name, Size, LastModified, PreviewUrl, EmbedUrl, WebUrl)</label>
                     <InputFile class="form-control" id="csvFile" OnChange="HandleCsvUpload" accept=".csv" />
                 </div>
                 @if (IsLoading)
@@ -97,9 +97,9 @@
                                             @if (!string.IsNullOrWhiteSpace(file.PreviewUrl) || !string.IsNullOrWhiteSpace(file.EmbedUrl) || (!string.IsNullOrEmpty(file.Id) && !string.IsNullOrEmpty(file.DriveId)))
                                             {
                                                 <div class="btn-group" role="group">
-                                                    @if (!string.IsNullOrWhiteSpace(file.PreviewUrl))
+                                                    @if (!string.IsNullOrWhiteSpace(file.PreviewUrl) || !string.IsNullOrWhiteSpace(file.WebUrl))
                                                     {
-                                                        <button class="btn btn-sm btn-outline-primary" @onclick="() => OpenInPopup(file.PreviewUrl)">Open Popup</button>
+                                                        <button class="btn btn-sm btn-outline-primary" @onclick="() => OpenInPopup(file.WebUrl ?? file.PreviewUrl)">Open Popup</button>
                                                     }
                                                     @if (!string.IsNullOrWhiteSpace(file.EmbedUrl) || (!string.IsNullOrEmpty(file.Id) && !string.IsNullOrEmpty(file.DriveId)))
                                                     {
@@ -287,7 +287,8 @@
                         Size = cols.Length > 1 && long.TryParse(cols[1].Trim(), out var size) ? size : 0,
                         LastModifiedDateTime = cols.Length > 2 && DateTimeOffset.TryParse(cols[2].Trim(), out var date) ? date : null,
                         PreviewUrl = cols.Length > 3 ? cols[3].Trim() : null,
-                        EmbedUrl = cols.Length > 4 ? cols[4].Trim() : null
+                        EmbedUrl = cols.Length > 4 ? cols[4].Trim() : null,
+                        WebUrl = cols.Length > 5 ? cols[5].Trim() : null
                     };
                     Files.Add(spFile);
                 }

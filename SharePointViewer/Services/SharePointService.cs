@@ -152,7 +152,8 @@ public class SharePointService
                     Size = file.Length,
                     LastModifiedDateTime = file.TimeLastModified,
                     PreviewUrl = $"https://{hostname}{file.ServerRelativeUrl}", // Absolute URL for Graph Shares API
-                    EmbedUrl = $"https://{hostname}{file.ServerRelativeUrl}?web=1&action=embedview" // Native SharePoint Embed
+                    EmbedUrl = $"https://{hostname}{file.ServerRelativeUrl}?web=1&action=embedview", // Native SharePoint Embed
+                    WebUrl = $"https://{hostname}{file.ServerRelativeUrl}?web=1" // Forces SharePoint Web Viewer instead of download
                 });
             }
         }

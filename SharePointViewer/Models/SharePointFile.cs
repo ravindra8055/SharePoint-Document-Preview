@@ -9,4 +9,5 @@ public class SharePointFile
     public DateTimeOffset? LastModifiedDateTime { get; set; }
     public string? PreviewUrl { get; set; }
     public string? EmbedUrl { get; set; }
+    public string? WebUrl { get; set; }
 }
