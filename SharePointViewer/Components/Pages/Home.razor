@@ -45,7 +45,7 @@
             else
             {
                 <div class="mb-3">
-                    <label for="csvFile" class="form-label">Upload CSV File (Format: Name, Size, LastModified, PreviewUrl, EmbedUrl, WebUrl)</label>
+                    <label for="csvFile" class="form-label">Upload CSV File (Format: Name, Size, LastModified, PreviewUrl, EmbedUrl, WebUrl, DocUrl)</label>
                     <InputFile class="form-control" id="csvFile" OnChange="HandleCsvUpload" accept=".csv" />
                 </div>
                 @if (IsLoading)
@@ -100,6 +100,10 @@
                                                     @if (!string.IsNullOrWhiteSpace(file.PreviewUrl) || !string.IsNullOrWhiteSpace(file.WebUrl))
                                                     {
                                                         <button class="btn btn-sm btn-outline-primary" @onclick="() => OpenInPopup(file.WebUrl ?? file.PreviewUrl)">Open Popup</button>
+                                                    }
+                                                    @if (!string.IsNullOrWhiteSpace(file.DocUrl))
+                                                    {
+                                                        <button class="btn btn-sm btn-outline-info" @onclick="() => OpenInPopup(file.DocUrl)">Doc.aspx Popup</button>
                                                     }
                                                     @if (!string.IsNullOrWhiteSpace(file.EmbedUrl) || (!string.IsNullOrEmpty(file.Id) && !string.IsNullOrEmpty(file.DriveId)))
                                                     {
@@ -288,7 +292,8 @@
                         LastModifiedDateTime = cols.Length > 2 && DateTimeOffset.TryParse(cols[2].Trim(), out var date) ? date : null,
                         PreviewUrl = cols.Length > 3 ? cols[3].Trim() : null,
                         EmbedUrl = cols.Length > 4 ? cols[4].Trim() : null,
-                        WebUrl = cols.Length > 5 ? cols[5].Trim() : null
+                        WebUrl = cols.Length > 5 ? cols[5].Trim() : null,
+                        DocUrl = cols.Length > 6 ? cols[6].Trim() : null
                     };
                     Files.Add(spFile);
                 }

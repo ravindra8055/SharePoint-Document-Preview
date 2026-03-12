@@ -10,4 +10,5 @@ public class SharePointFile
     public string? PreviewUrl { get; set; }
     public string? EmbedUrl { get; set; }
     public string? WebUrl { get; set; }
+    public string? DocUrl { get; set; }
 }

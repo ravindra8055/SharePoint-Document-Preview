@@ -153,7 +153,8 @@ public class SharePointService
                     LastModifiedDateTime = file.TimeLastModified,
                     PreviewUrl = $"https://{hostname}{file.ServerRelativeUrl}", // Absolute URL for Graph Shares API
                     EmbedUrl = $"https://{hostname}{file.ServerRelativeUrl}?web=1&action=embedview", // Native SharePoint Embed
-                    WebUrl = $"https://{hostname}{file.ServerRelativeUrl}?web=1" // Forces SharePoint Web Viewer instead of download
+                    WebUrl = $"https://{hostname}{file.ServerRelativeUrl}?web=1&action=embedview", // Strictly forces the chromeless Read-Only embed viewer
+                    DocUrl = $"{siteUrl.TrimEnd('/')}/_layouts/15/Doc.aspx?sourcedoc={file.UniqueId}&action=embedview" // Option 1: Doc.aspx handler
                 });
             }
         }
