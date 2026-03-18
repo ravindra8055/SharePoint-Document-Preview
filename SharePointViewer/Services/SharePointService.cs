@@ -188,8 +188,14 @@ public class SharePointService
 
             var folder = await context.Web.GetFolderByServerRelativeUrlAsync(folderRelativeUrl);
             
+            // Blazor's BrowserFileStream doesn't support synchronous reads, which PnP Core uses internally.
+            // We need to copy it to a MemoryStream first asynchronously.
+            using var memoryStream = new MemoryStream();
+            await fileStream.CopyToAsync(memoryStream);
+            memoryStream.Position = 0;
+
             // Upload the file
-            var addedFile = await folder.Files.AddAsync(fileName, fileStream, overwrite: true);
+            var addedFile = await folder.Files.AddAsync(fileName, memoryStream, overwrite: true);
 
             return new SharePointFile
             {
