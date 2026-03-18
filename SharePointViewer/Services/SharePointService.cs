@@ -153,8 +153,7 @@ public class SharePointService
                     LastModifiedDateTime = file.TimeLastModified,
                     PreviewUrl = $"https://{hostname}{file.ServerRelativeUrl}", // Absolute URL for Graph Shares API
                     EmbedUrl = $"https://{hostname}{file.ServerRelativeUrl}?web=1&action=embedview", // Native SharePoint Embed
-                    WebUrl = $"https://{hostname}{file.ServerRelativeUrl}?web=1&action=embedview", // Strictly forces the chromeless Read-Only embed viewer
-                    DocUrl = $"{siteUrl.TrimEnd('/')}/_layouts/15/Doc.aspx?sourcedoc={file.UniqueId}&action=embedview" // Option 1: Doc.aspx handler
+                    WebUrl = $"https://{hostname}{file.ServerRelativeUrl}?web=1&action=embedview" // Strictly forces the chromeless Read-Only embed viewer
                 });
             }
         }
@@ -164,6 +163,50 @@ public class SharePointService
         }
 
         return files;
+    }
+
+    public async Task<SharePointFile> UploadFileAsync(string folderUrl, string fileName, Stream fileStream)
+    {
+        try
+        {
+            var uri = new Uri(folderUrl);
+            var hostname = uri.Host;
+            var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            
+            if (segments.Length < 3)
+                throw new ArgumentException("Invalid SharePoint folder URL format.");
+
+            string sitePath = (segments[0].Equals("sites", StringComparison.OrdinalIgnoreCase) || segments[0].Equals("teams", StringComparison.OrdinalIgnoreCase))
+                ? $"/{segments[0]}/{segments[1]}"
+                : "/";
+
+            string siteUrl = $"https://{hostname}{sitePath}";
+            string folderRelativeUrl = uri.AbsolutePath;
+
+            var authProvider = GetPnPAuthenticationProvider(folderUrl);
+            using var context = await _pnpContextFactory.CreateAsync(new Uri(siteUrl), authProvider);
+
+            var folder = await context.Web.GetFolderByServerRelativeUrlAsync(folderRelativeUrl);
+            
+            // Upload the file
+            var addedFile = await folder.Files.AddAsync(fileName, fileStream, overwrite: true);
+
+            return new SharePointFile
+            {
+                Id = addedFile.UniqueId.ToString(),
+                DriveId = "graph-shares-api",
+                Name = addedFile.Name,
+                Size = addedFile.Length,
+                LastModifiedDateTime = addedFile.TimeLastModified,
+                PreviewUrl = $"https://{hostname}{addedFile.ServerRelativeUrl}",
+                EmbedUrl = $"https://{hostname}{addedFile.ServerRelativeUrl}?web=1&action=embedview",
+                WebUrl = $"https://{hostname}{addedFile.ServerRelativeUrl}?web=1&action=embedview"
+            };
+        }
+        catch (Exception ex)
+        {
+            throw new Exception($"Error uploading file: {ex.Message}", ex);
+        }
     }
 
     public async Task<string?> GetFilePreviewUrlAsync(string driveId, string itemId, string siteUrl)

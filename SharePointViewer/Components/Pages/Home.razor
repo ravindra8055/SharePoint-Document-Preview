@@ -45,7 +45,7 @@
             else
             {
                 <div class="mb-3">
-                    <label for="csvFile" class="form-label">Upload CSV File (Format: Name, Size, LastModified, PreviewUrl, EmbedUrl, WebUrl, DocUrl)</label>
+                    <label for="csvFile" class="form-label">Upload CSV File (Format: Name, Size, LastModified, PreviewUrl, EmbedUrl, WebUrl)</label>
                     <InputFile class="form-control" id="csvFile" OnChange="HandleCsvUpload" accept=".csv" />
                 </div>
                 @if (IsLoading)
@@ -68,6 +68,26 @@
         <div class="@(string.IsNullOrEmpty(InlinePreviewUrl) ? "col-12" : "col-md-6")">
             @if (Files != null)
             {
+                @if (!UseCsvUpload)
+                {
+                    <div class="card mb-3">
+                        <div class="card-body">
+                            <h5 class="card-title">Upload File to Folder</h5>
+                            <div class="d-flex align-items-center gap-2">
+                                <InputFile class="form-control" OnChange="HandleFileUpload" />
+                                @if (IsUploading)
+                                {
+                                    <span class="spinner-border spinner-border-sm text-primary" role="status" aria-hidden="true"></span>
+                                }
+                            </div>
+                            @if (!string.IsNullOrEmpty(UploadMessage))
+                            {
+                                <div class="mt-2 text-success">@UploadMessage</div>
+                            }
+                        </div>
+                    </div>
+                }
+
                 <div class="table-responsive">
                     <table class="table table-striped table-hover">
                         <thead class="table-dark">
@@ -100,10 +120,6 @@
                                                     @if (!string.IsNullOrWhiteSpace(file.PreviewUrl) || !string.IsNullOrWhiteSpace(file.WebUrl))
                                                     {
                                                         <button class="btn btn-sm btn-outline-primary" @onclick="() => OpenInPopup(file.WebUrl ?? file.PreviewUrl)">Open Popup</button>
-                                                    }
-                                                    @if (!string.IsNullOrWhiteSpace(file.DocUrl))
-                                                    {
-                                                        <button class="btn btn-sm btn-outline-info" @onclick="() => OpenInPopup(file.DocUrl)">Doc.aspx Popup</button>
                                                     }
                                                     @if (!string.IsNullOrWhiteSpace(file.EmbedUrl) || (!string.IsNullOrEmpty(file.Id) && !string.IsNullOrEmpty(file.DriveId)))
                                                     {
@@ -164,9 +180,45 @@
     private List<SharePointFile>? Files { get; set; }
     private bool IsLoading { get; set; }
     private bool IsLoadingPreview { get; set; }
+    private bool IsUploading { get; set; }
     private string? ErrorMessage { get; set; }
+    private string? UploadMessage { get; set; }
     private string? InlinePreviewUrl { get; set; }
     private SharePointFile? CurrentPreviewFile { get; set; }
+
+    private async Task HandleFileUpload(InputFileChangeEventArgs e)
+    {
+        IsUploading = true;
+        UploadMessage = null;
+        ErrorMessage = null;
+        
+        try
+        {
+            var file = e.File;
+            if (file == null) return;
+
+            // Max allowed size: 100 MB (adjust as needed)
+            using var stream = file.OpenReadStream(maxAllowedSize: 104857600);
+            
+            var uploadedFile = await SharePointService.UploadFileAsync(FolderUrl, file.Name, stream);
+            
+            // Add the new file to the list
+            if (Files != null)
+            {
+                Files.Add(uploadedFile);
+            }
+            
+            UploadMessage = $"Successfully uploaded '{file.Name}'!";
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = $"Failed to upload file: {ex.Message}";
+        }
+        finally
+        {
+            IsUploading = false;
+        }
+    }
 
     private async Task OpenInPopup(string url)
     {
@@ -237,6 +289,7 @@
 
         IsLoading = true;
         ErrorMessage = null;
+        UploadMessage = null;
         Files = null;
         InlinePreviewUrl = null;
 
@@ -258,6 +311,7 @@
     {
         IsLoading = true;
         ErrorMessage = null;
+        UploadMessage = null;
         Files = new List<SharePointFile>();
         InlinePreviewUrl = null;
 
@@ -292,8 +346,7 @@
                         LastModifiedDateTime = cols.Length > 2 && DateTimeOffset.TryParse(cols[2].Trim(), out var date) ? date : null,
                         PreviewUrl = cols.Length > 3 ? cols[3].Trim() : null,
                         EmbedUrl = cols.Length > 4 ? cols[4].Trim() : null,
-                        WebUrl = cols.Length > 5 ? cols[5].Trim() : null,
-                        DocUrl = cols.Length > 6 ? cols[6].Trim() : null
+                        WebUrl = cols.Length > 5 ? cols[5].Trim() : null
                     };
                     Files.Add(spFile);
                 }
