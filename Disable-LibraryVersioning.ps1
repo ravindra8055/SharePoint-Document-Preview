@@ -223,7 +223,7 @@ function Disable-LibraryVersioning {
         [string]$LibraryName
     )
 
-    # Use explicit variable names instead of hashtable to avoid property access issues
+    # Initialize all result variables
     $resultSuccess = $false
     $resultStatus = "Failed"
     $resultMessage = ""
@@ -235,85 +235,71 @@ function Disable-LibraryVersioning {
     $majorVersionLimit = $null
 
     try {
-        # Get the list first
+        # Get the list first - use [void] to suppress any pipeline output
         $list = Get-PnPList -Identity $LibraryName -ErrorAction Stop
 
         if ($null -eq $list) {
             $resultMessage = "Library not found: $LibraryName"
-            return @{
-                Success                   = $resultSuccess
-                Status                    = $resultStatus
-                Message                   = $resultMessage
-                PreviousVersioningEnabled = $resultPrevVersioningEnabled
-                PreviousMajorVersionLimit = $resultPrevMajorVersionLimit
-            }
         }
     }
     catch {
         $resultMessage = "Error getting library: $_"
-        return @{
-            Success                   = $resultSuccess
-            Status                    = $resultStatus
-            Message                   = $resultMessage
-            PreviousVersioningEnabled = $resultPrevVersioningEnabled
-            PreviousMajorVersionLimit = $resultPrevMajorVersionLimit
+        $list = $null
+    }
+
+    # If we got a list, proceed with versioning operations
+    if ($null -ne $list) {
+        # Explicitly load the versioning properties using Get-PnPProperty
+        try {
+            [void](Get-PnPProperty -ClientObject $list -Property EnableVersioning, MajorVersionLimit -ErrorAction Stop)
+            $versioningEnabled = $list.EnableVersioning
+            $majorVersionLimit = $list.MajorVersionLimit
+            $resultPrevVersioningEnabled = [string]$versioningEnabled
+            $resultPrevMajorVersionLimit = [string]$majorVersionLimit
         }
-    }
-
-    # Explicitly load the versioning properties using Get-PnPProperty
-    try {
-        Get-PnPProperty -ClientObject $list -Property EnableVersioning, MajorVersionLimit -ErrorAction Stop | Out-Null
-        $versioningEnabled = $list.EnableVersioning
-        $majorVersionLimit = $list.MajorVersionLimit
-        $resultPrevVersioningEnabled = [string]$versioningEnabled
-        $resultPrevMajorVersionLimit = [string]$majorVersionLimit
-    }
-    catch {
-        # Properties couldn't be loaded - try to proceed anyway
-        Write-Warning "Could not load versioning properties for $LibraryName - will attempt to disable anyway"
-        $resultPrevVersioningEnabled = "Unknown"
-        $resultPrevMajorVersionLimit = "Unknown"
-        $versioningEnabled = $true  # Assume enabled and try to disable
-    }
-
-    # Check if versioning is already disabled
-    if ($versioningEnabled -eq $false) {
-        $resultSuccess = $true
-        $resultStatus = "AlreadyDisabled"
-        $resultMessage = "Versioning was already disabled on this library"
-        return @{
-            Success                   = $resultSuccess
-            Status                    = $resultStatus
-            Message                   = $resultMessage
-            PreviousVersioningEnabled = $resultPrevVersioningEnabled
-            PreviousMajorVersionLimit = $resultPrevMajorVersionLimit
+        catch {
+            # Properties couldn't be loaded - try to proceed anyway
+            Write-Warning "Could not load versioning properties for $LibraryName - will attempt to disable anyway"
+            $resultPrevVersioningEnabled = "Unknown"
+            $resultPrevMajorVersionLimit = "Unknown"
+            $versioningEnabled = $true  # Assume enabled and try to disable
         }
-    }
 
-    # Disable versioning
-    try {
-        Set-PnPList -Identity $LibraryName -EnableVersioning $false -ErrorAction Stop
-
-        $resultSuccess = $true
-        $resultStatus = "Updated"
-        if ($null -ne $majorVersionLimit) {
-            $resultMessage = "Versioning disabled successfully. Previous setting: Enabled with $majorVersionLimit major versions"
+        # Check if versioning is already disabled
+        if ($versioningEnabled -eq $false) {
+            $resultSuccess = $true
+            $resultStatus = "AlreadyDisabled"
+            $resultMessage = "Versioning was already disabled on this library"
         }
         else {
-            $resultMessage = "Versioning disabled successfully"
+            # Disable versioning
+            try {
+                [void](Set-PnPList -Identity $LibraryName -EnableVersioning $false -ErrorAction Stop)
+
+                $resultSuccess = $true
+                $resultStatus = "Updated"
+                if ($null -ne $majorVersionLimit) {
+                    $resultMessage = "Versioning disabled successfully. Previous setting: Enabled with $majorVersionLimit major versions"
+                }
+                else {
+                    $resultMessage = "Versioning disabled successfully"
+                }
+            }
+            catch {
+                $resultMessage = "Error disabling versioning: $_"
+            }
         }
     }
-    catch {
-        $resultMessage = "Error disabling versioning: $_"
-    }
 
-    return @{
-        Success                   = $resultSuccess
-        Status                    = $resultStatus
-        Message                   = $resultMessage
-        PreviousVersioningEnabled = $resultPrevVersioningEnabled
-        PreviousMajorVersionLimit = $resultPrevMajorVersionLimit
-    }
+    # Return a PSCustomObject instead of hashtable - more predictable in PS 5.1
+    $output = New-Object PSObject
+    $output | Add-Member -NotePropertyName "Success" -NotePropertyValue $resultSuccess
+    $output | Add-Member -NotePropertyName "Status" -NotePropertyValue $resultStatus
+    $output | Add-Member -NotePropertyName "Message" -NotePropertyValue $resultMessage
+    $output | Add-Member -NotePropertyName "PreviousVersioningEnabled" -NotePropertyValue $resultPrevVersioningEnabled
+    $output | Add-Member -NotePropertyName "PreviousMajorVersionLimit" -NotePropertyValue $resultPrevMajorVersionLimit
+    
+    return $output
 }
 
 # ==========================================
@@ -394,7 +380,7 @@ function Invoke-DisableVersioning {
         # Disable versioning
         $result = Disable-LibraryVersioning -LibraryName $libraryName
 
-        # Extract values from result hashtable into local variables first
+        # Extract values from result object into local variables
         $prevVersionEnabled = ""
         $prevMajorLimit = ""
         $resStatus = "Failed"
@@ -402,11 +388,11 @@ function Invoke-DisableVersioning {
         $resMessage = ""
 
         if ($null -ne $result) {
-            $prevVersionEnabled = [string]$result["PreviousVersioningEnabled"]
-            $prevMajorLimit = [string]$result["PreviousMajorVersionLimit"]
-            $resStatus = [string]$result["Status"]
-            $resSuccess = $result["Success"]
-            $resMessage = [string]$result["Message"]
+            $prevVersionEnabled = $result.PreviousVersioningEnabled
+            $prevMajorLimit = $result.PreviousMajorVersionLimit
+            $resStatus = $result.Status
+            $resSuccess = $result.Success
+            $resMessage = $result.Message
         }
 
         $row = [PSCustomObject]@{
