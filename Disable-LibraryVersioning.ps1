@@ -394,28 +394,43 @@ function Invoke-DisableVersioning {
         # Disable versioning
         $result = Disable-LibraryVersioning -LibraryName $libraryName
 
+        # Extract values from result hashtable into local variables first
+        $prevVersionEnabled = ""
+        $prevMajorLimit = ""
+        $resStatus = "Failed"
+        $resSuccess = $false
+        $resMessage = ""
+
+        if ($null -ne $result) {
+            $prevVersionEnabled = [string]$result["PreviousVersioningEnabled"]
+            $prevMajorLimit = [string]$result["PreviousMajorVersionLimit"]
+            $resStatus = [string]$result["Status"]
+            $resSuccess = $result["Success"]
+            $resMessage = [string]$result["Message"]
+        }
+
         $row = [PSCustomObject]@{
             RowNumber                 = $rowIndex
             SiteUrl                   = $siteUrl
             LibraryName               = $libraryName
-            PreviousVersioningEnabled = $result["PreviousVersioningEnabled"]
-            PreviousMajorVersionLimit = $result["PreviousMajorVersionLimit"]
-            Status                    = $result["Status"]
-            IsSuccessful              = $result["Success"]
-            Message                   = $result["Message"]
+            PreviousVersioningEnabled = $prevVersionEnabled
+            PreviousMajorVersionLimit = $prevMajorLimit
+            Status                    = $resStatus
+            IsSuccessful              = $resSuccess
+            Message                   = $resMessage
             Timestamp                 = (Get-Date).ToString("s")
         }
 
         Write-ResultRow -Row $row
         $script:ProcessedRows++
 
-        if ($result["Success"]) {
+        if ($resSuccess) {
             $script:SuccessfulRows++
-            Write-Verbose "Row $rowIndex ($libraryName): $($result["Status"])"
+            Write-Verbose "Row $rowIndex ($libraryName): $resStatus"
         }
         else {
             $script:FailedRows++
-            Write-Warning "Row $rowIndex ($libraryName): $($result["Message"])"
+            Write-Warning "Row $rowIndex ($libraryName): $resMessage"
         }
     }
 
