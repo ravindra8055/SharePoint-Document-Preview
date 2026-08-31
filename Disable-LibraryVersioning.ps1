@@ -223,13 +223,12 @@ function Disable-LibraryVersioning {
         [string]$LibraryName
     )
 
-    $result = @{
-        Success = $false
-        Status = "Failed"
-        Message = ""
-        PreviousVersioningEnabled = ""
-        PreviousMajorVersionLimit = ""
-    }
+    # Use explicit variable names instead of hashtable to avoid property access issues
+    $resultSuccess = $false
+    $resultStatus = "Failed"
+    $resultMessage = ""
+    $resultPrevVersioningEnabled = ""
+    $resultPrevMajorVersionLimit = ""
 
     $list = $null
     $versioningEnabled = $null
@@ -240,13 +239,25 @@ function Disable-LibraryVersioning {
         $list = Get-PnPList -Identity $LibraryName -ErrorAction Stop
 
         if ($null -eq $list) {
-            $result.Message = "Library not found: $LibraryName"
-            return $result
+            $resultMessage = "Library not found: $LibraryName"
+            return @{
+                Success                   = $resultSuccess
+                Status                    = $resultStatus
+                Message                   = $resultMessage
+                PreviousVersioningEnabled = $resultPrevVersioningEnabled
+                PreviousMajorVersionLimit = $resultPrevMajorVersionLimit
+            }
         }
     }
     catch {
-        $result.Message = "Error getting library: $_"
-        return $result
+        $resultMessage = "Error getting library: $_"
+        return @{
+            Success                   = $resultSuccess
+            Status                    = $resultStatus
+            Message                   = $resultMessage
+            PreviousVersioningEnabled = $resultPrevVersioningEnabled
+            PreviousMajorVersionLimit = $resultPrevMajorVersionLimit
+        }
     }
 
     # Explicitly load the versioning properties using Get-PnPProperty
@@ -254,43 +265,55 @@ function Disable-LibraryVersioning {
         Get-PnPProperty -ClientObject $list -Property EnableVersioning, MajorVersionLimit -ErrorAction Stop | Out-Null
         $versioningEnabled = $list.EnableVersioning
         $majorVersionLimit = $list.MajorVersionLimit
-        $result.PreviousVersioningEnabled = $versioningEnabled
-        $result.PreviousMajorVersionLimit = $majorVersionLimit
+        $resultPrevVersioningEnabled = [string]$versioningEnabled
+        $resultPrevMajorVersionLimit = [string]$majorVersionLimit
     }
     catch {
         # Properties couldn't be loaded - try to proceed anyway
         Write-Warning "Could not load versioning properties for $LibraryName - will attempt to disable anyway"
-        $result.PreviousVersioningEnabled = "Unknown"
-        $result.PreviousMajorVersionLimit = "Unknown"
+        $resultPrevVersioningEnabled = "Unknown"
+        $resultPrevMajorVersionLimit = "Unknown"
         $versioningEnabled = $true  # Assume enabled and try to disable
     }
 
     # Check if versioning is already disabled
     if ($versioningEnabled -eq $false) {
-        $result.Success = $true
-        $result.Status = "AlreadyDisabled"
-        $result.Message = "Versioning was already disabled on this library"
-        return $result
+        $resultSuccess = $true
+        $resultStatus = "AlreadyDisabled"
+        $resultMessage = "Versioning was already disabled on this library"
+        return @{
+            Success                   = $resultSuccess
+            Status                    = $resultStatus
+            Message                   = $resultMessage
+            PreviousVersioningEnabled = $resultPrevVersioningEnabled
+            PreviousMajorVersionLimit = $resultPrevMajorVersionLimit
+        }
     }
 
     # Disable versioning
     try {
         Set-PnPList -Identity $LibraryName -EnableVersioning $false -ErrorAction Stop
 
-        $result.Success = $true
-        $result.Status = "Updated"
-        if ($majorVersionLimit -ne $null) {
-            $result.Message = "Versioning disabled successfully. Previous setting: Enabled with $majorVersionLimit major versions"
+        $resultSuccess = $true
+        $resultStatus = "Updated"
+        if ($null -ne $majorVersionLimit) {
+            $resultMessage = "Versioning disabled successfully. Previous setting: Enabled with $majorVersionLimit major versions"
         }
         else {
-            $result.Message = "Versioning disabled successfully"
+            $resultMessage = "Versioning disabled successfully"
         }
     }
     catch {
-        $result.Message = "Error disabling versioning: $_"
+        $resultMessage = "Error disabling versioning: $_"
     }
 
-    return $result
+    return @{
+        Success                   = $resultSuccess
+        Status                    = $resultStatus
+        Message                   = $resultMessage
+        PreviousVersioningEnabled = $resultPrevVersioningEnabled
+        PreviousMajorVersionLimit = $resultPrevMajorVersionLimit
+    }
 }
 
 # ==========================================
@@ -375,24 +398,24 @@ function Invoke-DisableVersioning {
             RowNumber                 = $rowIndex
             SiteUrl                   = $siteUrl
             LibraryName               = $libraryName
-            PreviousVersioningEnabled = $result.PreviousVersioningEnabled
-            PreviousMajorVersionLimit = $result.PreviousMajorVersionLimit
-            Status                    = $result.Status
-            IsSuccessful              = $result.Success
-            Message                   = $result.Message
+            PreviousVersioningEnabled = $result["PreviousVersioningEnabled"]
+            PreviousMajorVersionLimit = $result["PreviousMajorVersionLimit"]
+            Status                    = $result["Status"]
+            IsSuccessful              = $result["Success"]
+            Message                   = $result["Message"]
             Timestamp                 = (Get-Date).ToString("s")
         }
 
         Write-ResultRow -Row $row
         $script:ProcessedRows++
 
-        if ($result.Success) {
+        if ($result["Success"]) {
             $script:SuccessfulRows++
-            Write-Verbose "Row $rowIndex ($libraryName): $($result.Status)"
+            Write-Verbose "Row $rowIndex ($libraryName): $($result["Status"])"
         }
         else {
             $script:FailedRows++
-            Write-Warning "Row $rowIndex ($libraryName): $($result.Message)"
+            Write-Warning "Row $rowIndex ($libraryName): $($result["Message"])"
         }
     }
 
