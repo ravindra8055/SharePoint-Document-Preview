@@ -232,13 +232,16 @@ function Disable-LibraryVersioning {
     }
 
     try {
-        # Get current library settings
+        # Get the list first
         $list = Get-PnPList -Identity $LibraryName -ErrorAction Stop
 
         if ($null -eq $list) {
             $result.Message = "Library not found: $LibraryName"
             return $result
         }
+
+        # Explicitly load the versioning properties using Get-PnPProperty
+        Get-PnPProperty -ClientObject $list -Property EnableVersioning, MajorVersionLimit -ErrorAction Stop | Out-Null
 
         $result.PreviousVersioningEnabled = $list.EnableVersioning
         $result.PreviousMajorVersionLimit = $list.MajorVersionLimit
