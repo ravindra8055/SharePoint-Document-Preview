@@ -227,9 +227,13 @@ function Disable-LibraryVersioning {
         Success = $false
         Status = "Failed"
         Message = ""
-        PreviousVersioningEnabled = $null
-        PreviousMajorVersionLimit = $null
+        PreviousVersioningEnabled = ""
+        PreviousMajorVersionLimit = ""
     }
+
+    $list = $null
+    $versioningEnabled = $null
+    $majorVersionLimit = $null
 
     try {
         # Get the list first
@@ -239,27 +243,48 @@ function Disable-LibraryVersioning {
             $result.Message = "Library not found: $LibraryName"
             return $result
         }
+    }
+    catch {
+        $result.Message = "Error getting library: $_"
+        return $result
+    }
 
-        # Explicitly load the versioning properties using Get-PnPProperty
+    # Explicitly load the versioning properties using Get-PnPProperty
+    try {
         Get-PnPProperty -ClientObject $list -Property EnableVersioning, MajorVersionLimit -ErrorAction Stop | Out-Null
+        $versioningEnabled = $list.EnableVersioning
+        $majorVersionLimit = $list.MajorVersionLimit
+        $result.PreviousVersioningEnabled = $versioningEnabled
+        $result.PreviousMajorVersionLimit = $majorVersionLimit
+    }
+    catch {
+        # Properties couldn't be loaded - try to proceed anyway
+        Write-Warning "Could not load versioning properties for $LibraryName - will attempt to disable anyway"
+        $result.PreviousVersioningEnabled = "Unknown"
+        $result.PreviousMajorVersionLimit = "Unknown"
+        $versioningEnabled = $true  # Assume enabled and try to disable
+    }
 
-        $result.PreviousVersioningEnabled = $list.EnableVersioning
-        $result.PreviousMajorVersionLimit = $list.MajorVersionLimit
+    # Check if versioning is already disabled
+    if ($versioningEnabled -eq $false) {
+        $result.Success = $true
+        $result.Status = "AlreadyDisabled"
+        $result.Message = "Versioning was already disabled on this library"
+        return $result
+    }
 
-        # Check if versioning is already disabled
-        if (-not $list.EnableVersioning) {
-            $result.Success = $true
-            $result.Status = "AlreadyDisabled"
-            $result.Message = "Versioning was already disabled on this library"
-            return $result
-        }
-
-        # Disable versioning
+    # Disable versioning
+    try {
         Set-PnPList -Identity $LibraryName -EnableVersioning $false -ErrorAction Stop
 
         $result.Success = $true
         $result.Status = "Updated"
-        $result.Message = "Versioning disabled successfully. Previous setting: Enabled with $($list.MajorVersionLimit) major versions"
+        if ($majorVersionLimit -ne $null) {
+            $result.Message = "Versioning disabled successfully. Previous setting: Enabled with $majorVersionLimit major versions"
+        }
+        else {
+            $result.Message = "Versioning disabled successfully"
+        }
     }
     catch {
         $result.Message = "Error disabling versioning: $_"
