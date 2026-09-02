@@ -1,0 +1,82 @@
+Create a complete .NET 8 console application in C# that simulates load testing against a production ASP.NET Web API or WCF service. The app should be designed to reproduce a high-concurrency scenario to help identify performance issues such as slow responses or timeouts. It must be a standalone project that can compile and run with the .NET SDK.
+
+Requirements:
+
+Project setup
+Create a .NET 8 console app using the SDK-style project format.
+Use the target framework net8.0.
+Keep the logic in a single Program.cs file if possible, with a simple .csproj file.
+Include the necessary usings and support for async programming.
+Command-line arguments
+The application should parse arguments from the command line. Include support for:
+--url: the target API URL (required)
+--method: HTTP method such as GET, POST, PUT, DELETE (default GET)
+--body: request payload body string
+--content-type: content type such as application/json, application/xml, application/x-www-form-urlencoded
+--concurrency: number of concurrent workers
+--requests: total number of requests to execute
+--timeout: per-request timeout in milliseconds
+--delay-ms: delay in milliseconds between requests
+--authorization: value for the Authorization header
+--accept: value for the Accept header
+--header Name=Value: custom headers, multiple allowed
+--log-file: path to CSV log file
+--log-responses: flag to print each response status to console
+--help: show usage and exit
+HTTP behavior
+Use HttpClient to call the target endpoint.
+Support JSON, XML, and form-url-encoded data depending on content type.
+If a body is provided, assign it to request.Content using StringContent with UTF-8 encoding.
+For each header passed by --header, add it with TryAddWithoutValidation.
+If --authorization is supplied, set the Authorization header on the HttpClient.
+If --accept is supplied, set the Accept header.
+Use HttpClient.Timeout to enforce individual request timeout.
+Use HttpCompletionOption.ResponseHeadersRead to stream response processing efficiently.
+Concurrency model
+Start multiple workers using Task.WhenAll.
+Each worker should loop until TotalRequests is reached.
+Use Interlocked for request counting and success/failure counters.
+Use ConcurrentQueue<long> for collecting latency values.
+Use Stopwatch to measure each request duration.
+Use a small delay between requests if --delay-ms is set.
+Logging and reporting
+For every single request, record:
+RequestNumber
+StartTimeUtc
+EndTimeUtc
+ElapsedMs
+StatusCode
+Success
+ResponseBody
+ErrorMessage
+Write these fields to a CSV file. The CSV should include a header row and each request should append one row. Ensure that file writes are thread-safe under concurrent execution. Use a named Mutex or equivalent lock to prevent interleaved or corrupted writes when multiple workers are writing at the same time. Also ensure the file is created automatically if it does not exist.
+
+At the end of the run, print summary information to the console:
+
+Total sent
+Succeeded
+Failed
+Elapsed time
+Average latency
+Min latency
+Max latency
+Requests per second
+Error handling
+Catch exceptions per request and record them in ErrorMessage.
+Increment failed count for exceptions or non-2xx responses.
+Print warnings for HTTP errors and errors for exceptions.
+Do not crash the entire run because one request fails.
+CSV safety
+Use robust CSV escaping for text values containing comma, quotes, newlines, or carriage returns.
+The log should remain valid even with large response bodies.
+Output and examples
+Provide a help screen with correct example commands, including:
+a simple GET request example
+a POST request with JSON body
+a request with custom headers and authorization
+a request with a custom log file path
+Final result
+After creating the code, validate that it builds successfully with dotnet build. Ensure there are no compile errors.
+Make the code production-ready, easy to understand, and suitable for testing an API under load before and after business hours. Do not use external NuGet packages.
+
+This is a strong prompt because it tells the AI exactly what to generate, the arguments to include, concurrency logic, CSV file behavior, safety requirements, and verification expectation.
