@@ -1,82 +1,475 @@
-Create a complete .NET 8 console application in C# that simulates load testing against a production ASP.NET Web API or WCF service. The app should be designed to reproduce a high-concurrency scenario to help identify performance issues such as slow responses or timeouts. It must be a standalone project that can compile and run with the .NET SDK.
+# Migration parity harness — Spec Kit master brief
 
-Requirements:
+Spec-Driven Development brief for building a CMS migration validation harness
+(Umbraco 13 / Sitecore → Umbraco 17) inside a client VM, using **GitHub Copilot**,
+**[Spec Kit](https://github.com/github/spec-kit)** and the
+**[Playwright agent-cli skill](https://playwright.dev/agent-cli/skills)**.
 
-Project setup
-Create a .NET 8 console app using the SDK-style project format.
-Use the target framework net8.0.
-Keep the logic in a single Program.cs file if possible, with a simple .csproj file.
-Include the necessary usings and support for async programming.
-Command-line arguments
-The application should parse arguments from the command line. Include support for:
---url: the target API URL (required)
---method: HTTP method such as GET, POST, PUT, DELETE (default GET)
---body: request payload body string
---content-type: content type such as application/json, application/xml, application/x-www-form-urlencoded
---concurrency: number of concurrent workers
---requests: total number of requests to execute
---timeout: per-request timeout in milliseconds
---delay-ms: delay in milliseconds between requests
---authorization: value for the Authorization header
---accept: value for the Accept header
---header Name=Value: custom headers, multiple allowed
---log-file: path to CSV log file
---log-responses: flag to print each response status to console
---help: show usage and exit
-HTTP behavior
-Use HttpClient to call the target endpoint.
-Support JSON, XML, and form-url-encoded data depending on content type.
-If a body is provided, assign it to request.Content using StringContent with UTF-8 encoding.
-For each header passed by --header, add it with TryAddWithoutValidation.
-If --authorization is supplied, set the Authorization header on the HttpClient.
-If --accept is supplied, set the Accept header.
-Use HttpClient.Timeout to enforce individual request timeout.
-Use HttpCompletionOption.ResponseHeadersRead to stream response processing efficiently.
-Concurrency model
-Start multiple workers using Task.WhenAll.
-Each worker should loop until TotalRequests is reached.
-Use Interlocked for request counting and success/failure counters.
-Use ConcurrentQueue<long> for collecting latency values.
-Use Stopwatch to measure each request duration.
-Use a small delay between requests if --delay-ms is set.
-Logging and reporting
-For every single request, record:
-RequestNumber
-StartTimeUtc
-EndTimeUtc
-ElapsedMs
-StatusCode
-Success
-ResponseBody
-ErrorMessage
-Write these fields to a CSV file. The CSV should include a header row and each request should append one row. Ensure that file writes are thread-safe under concurrent execution. Use a named Mutex or equivalent lock to prevent interleaved or corrupted writes when multiple workers are writing at the same time. Also ensure the file is created automatically if it does not exist.
+Every fenced block below is copy-paste ready. Work down the file in order.
 
-At the end of the run, print summary information to the console:
+---
 
-Total sent
-Succeeded
-Failed
-Elapsed time
-Average latency
-Min latency
-Max latency
-Requests per second
-Error handling
-Catch exceptions per request and record them in ErrorMessage.
-Increment failed count for exceptions or non-2xx responses.
-Print warnings for HTTP errors and errors for exceptions.
-Do not crash the entire run because one request fails.
-CSV safety
-Use robust CSV escaping for text values containing comma, quotes, newlines, or carriage returns.
-The log should remain valid even with large response bodies.
-Output and examples
-Provide a help screen with correct example commands, including:
-a simple GET request example
-a POST request with JSON body
-a request with custom headers and authorization
-a request with a custom log file path
-Final result
-After creating the code, validate that it builds successfully with dotnet build. Ensure there are no compile errors.
-Make the code production-ready, easy to understand, and suitable for testing an API under load before and after business hours. Do not use external NuGet packages.
+## 0. VM setup
 
-This is a strong prompt because it tells the AI exactly what to generate, the arguments to include, concurrency logic, CSV file behavior, safety requirements, and verification expectation.
+```bash
+# Spec Kit (needs Python 3.11+, uv, git)
+uv tool install specify-cli                     # or --from git+https://github.com/github/spec-kit.git@vX.Y.Z
+specify init migration-parity --integration copilot
+cd migration-parity
+
+# Playwright test runner — the thing that actually runs the suite
+npm init -y
+npm i -D @playwright/test typescript
+npx playwright install chromium
+
+# Playwright agent-cli skill — teaches Copilot to drive a live browser
+npm i -D playwright-cli
+npx playwright-cli install --skills=agents      # -> .agents/skills/playwright-cli
+```
+
+If Copilot does not pick up `.agents/skills`, also run `npx playwright-cli install --skills`
+(Claude Code layout, `.claude/skills/playwright-cli`). Installing both is harmless.
+
+**Offline VM notes.** `specify` needs PyPI or GitHub; if both are blocked, ask for
+`specify-cli` to be vendored, or fall back to the plain-Copilot brief (`COPILOT_BRIEF.md`).
+If the Chromium download is blocked, request `PLAYWRIGHT_BROWSERS_PATH` pointed at a
+pre-seeded directory, or install distro Chromium and set `channel: 'chromium'`.
+
+---
+
+## 1. Who does what
+
+Three tools, three jobs. Keep them straight or Copilot will conflate them.
+
+| Tool | Role |
+| --- | --- |
+| **Spec Kit** | Drives the build: constitution → spec → plan → tasks → implement → converge |
+| **`@playwright/test`** | The delivered artifact's runtime. Runs the crawl, capture and parity suites headlessly at scale. |
+| **`playwright-cli` skill** | Copilot's hands during development. Interactive exploration, test generation, failure healing, tracing. **Never** the production runtime. |
+
+> Put this distinction in the constitution. Left to itself Copilot will happily try to
+> crawl 5,000 pages by issuing `playwright-cli` commands one at a time.
+
+---
+
+## 2. `/speckit.constitution`
+
+```
+/speckit.constitution
+
+Create the governing principles for a CMS migration validation harness. The project
+verifies that content survived a rebuild from Umbraco 13 and Sitecore onto Umbraco 17,
+across several public-facing sites, where the target templates, markup and URLs are
+deliberately different from the source.
+
+Principle 1 — Structure-agnostic comparison.
+The target is a redesign. Comparing HTML, DOM trees, CSS classes, element order or
+screenshots is forbidden: it produces false failures at a rate that makes the harness
+useless. All verification compares normalised text and unordered sets. Any proposal
+involving pixel diffing, image snapshots, toHaveScreenshot, innerHTML equality or
+assertions on target markup structure must be rejected outright.
+
+Principle 2 — Evidence before demolition.
+The source systems will be decommissioned and cannot be re-crawled. Anything derived
+from a source site must be persisted to disk as durable, human-readable JSON or CSV at
+the moment it is captured. Never hold source-derived state only in memory.
+
+Principle 3 — Absence is the headline finding.
+A page that failed to migrate produces no test, and therefore no failure. Reconciliation
+between the source and target page inventories is a first-class output, not a by-product.
+Every source page with no target counterpart must appear in a report a non-technical
+content owner can read.
+
+Principle 4 — Dependency minimalism.
+The harness runs in a restricted client VM with limited package access. @playwright/test
+and typescript are the only runtime dependencies. CSV parsing, URL normalisation, text
+diffing, sitemap parsing and robots parsing are hand-written. Adding a dependency
+requires explicit human approval.
+
+Principle 5 — Tunable, never hardcoded.
+Every threshold, selector list, ignore rule, base URL and credential is configurable via
+environment variables or data files. No site-specific value is ever embedded in code.
+
+Principle 6 — Fail loud, crash never.
+A malformed page, a timeout, or a 500 must produce a recorded failed check with a reason.
+An unhandled exception that terminates a multi-thousand-page run is a defect.
+
+Principle 7 — Tool boundaries.
+@playwright/test is the production runtime for all crawling and testing. The playwright-cli
+agent skill is a development aid only — used for interactive exploration, test scaffolding,
+trace inspection and failure diagnosis. Never generate a deliverable that invokes
+playwright-cli at runtime.
+
+Principle 8 — Read-only against client systems.
+The harness only performs GET requests against source and target sites. It never submits
+forms, never authenticates as a real user, and never writes to any CMS.
+```
+
+---
+
+## 3. `/speckit.specify`
+
+Describe **what and why**. Resist naming files or libraries here — that is `/speckit.plan`.
+
+```
+/speckit.specify
+
+Build a migration validation harness that proves content survived a website rebuild.
+
+CONTEXT
+We are rebuilding several public-facing websites. Sources are Umbraco 13 (several sites)
+and Sitecore (several sites). The target for all of them is Umbraco 17. Content was
+migrated by a separate process. The target's page templates, component structure, markup
+and URL paths are all deliberately different from the source. My job is to prove that the
+content and data arrived intact, across the whole estate, before the old systems are
+switched off.
+
+I will supply only two things per site: the source root URL and the target root URL. I do
+not have a page inventory and will not hand-build one.
+
+THE CENTRAL PROBLEM
+Because the markup differs by design, comparing pages by their HTML or appearance is
+meaningless. Verification must be sensitive to content and blind to structure, ordering,
+nesting and styling.
+
+USER STORIES, in priority order. Each must be independently valuable and testable.
+
+US1 (P1) — Discover an estate from a root URL.
+As a QA engineer, I give the tool one root URL and receive a complete inventory of every
+page on that domain, so I never hand-maintain a page list.
+Acceptance: seeds from sitemap.xml including sitemap indexes, then follows internal links
+breadth-first; stays on the domain; honours robots.txt; deduplicates URLs that differ only
+by trailing slash, casing, fragment or tracking parameters; excludes CMS back-office paths;
+records non-HTML assets such as PDFs separately rather than crawling them; survives
+individual page failures; and is bounded by configurable page and depth limits so that
+faceted listings and calendars cannot trap it.
+
+US2 (P1) — Pair source pages with target pages despite changed URLs.
+As a QA engineer, I receive a source-to-target URL mapping generated automatically, with
+the matching method and a confidence score recorded for every pair, so I only hand-review
+the uncertain ones.
+Acceptance: multiple independent matching strategies are attempted in confidence order,
+including asking the target site to resolve the old path via its own redirect map;
+hand-written overrides always take precedence; low-confidence pairs are flagged for
+review; re-running after edits is cheap.
+
+US3 (P1) — Preserve evidence of the source before decommission.
+As a migration lead, I capture the content of every source page to durable files before
+the old systems are retired, so verification remains possible after they are gone.
+Acceptance: one persisted record per source page; re-runnable; safe to commit or archive.
+
+US4 (P1) — Verify content parity for a page pair.
+As a QA engineer, I learn whether a target page contains everything its source page
+contained, and if not, exactly which content is missing, expressed as the actual missing
+sentences rather than a similarity score.
+Acceptance: every passage of source body text must be found somewhere in the target page,
+regardless of where; headings, links, images, downloadable documents, table values and
+form fields are compared as unordered sets; page metadata and SEO signals are compared;
+content present only on the target is reported as information, not failure; verdicts are
+pass, warn or fail with named checks and severities; thresholds vary by page importance.
+
+US5 (P1) — Reconcile the two estates.
+As a content owner, I receive a plain-language report of every source page with no target
+counterpart, every target-only page, and every document present on one side but not the
+other, so missing content is found even though no test exists for it.
+Acceptance: readable in a spreadsheet by a non-technical person; each row states the
+likely cause.
+
+US6 (P2) — Triage results without reading code.
+As a content owner, I open one spreadsheet listing every page, its verdict, its coverage
+percentage, which checks failed and a sample of the missing content, sorted worst-first.
+
+US7 (P2) — Check the whole estate cheaply.
+As a QA engineer, I verify status code, final redirect target, canonical URL, indexability
+and title presence for every URL in the estate quickly, reserving deep content comparison
+for the most important pages plus a sample of each page type, because template-level
+defects are the ones that actually occur.
+
+US8 (P3) — Verify data beyond what is rendered.
+As a migration lead, I compare content field by field between the source and target content
+APIs, because rendered HTML only shows what is published and visible, and cannot reveal a
+dropped property, an emptied rich-text field, a lost language variant, or an entire content
+type that never migrated.
+
+US9 (P3) — Run the whole estate in one pipeline.
+As a QA lead, I run every site through discovery, capture and parity in one command, and
+receive one merged report with a site column.
+
+SUCCESS CRITERIA
+- Given only two root URLs, the harness produces a reviewed mapping with no hand-authored
+  page list.
+- With the target's redirect map deployed, at least 90% of source pages are paired
+  automatically at confidence 0.9 or above.
+- On a 50-page pilot, fewer than 5% of reported failures are false positives caused by
+  template differences rather than missing content.
+- Every failure report names the specific missing content, so a content author can act on
+  it without opening the codebase or the source site.
+- A 5,000-page estate completes discovery in under an hour on a single VM.
+- Zero writes are made to any client system.
+
+EDGE CASES TO HANDLE
+Pages behind basic auth on staging; self-signed certificates; JS-rendered navigation;
+paginated listings; multilingual sites with hreflang; a site living under a path prefix on
+a shared domain; source pages intentionally dropped from the rebuild; target pages that are
+new content; the same content reachable at several source URLs; cookie banners and consent
+overlays; redirect chains; noindex pages.
+
+OUT OF SCOPE
+Performance testing, accessibility auditing, visual or brand review, load testing, security
+testing, and any modification of either CMS.
+```
+
+---
+
+## 4. `/speckit.clarify`
+
+Run it, then answer from this crib sheet. Pre-empting these stops the spec drifting.
+
+```
+/speckit.clarify
+```
+
+| Likely question | Answer |
+| --- | --- |
+| How similar must content be to pass? | Not a similarity score. Every source passage of 25+ characters must appear verbatim in the target's normalised text. Coverage = found ÷ total. |
+| What about reordered sections? | Passes. All comparison is unordered. |
+| What if the target rewords copy? | That is a real finding. Report it; do not fuzzy-match it away. Editorial rewrites go in the overrides/ignore list deliberately. |
+| How are page importance tiers set? | Inferred during discovery from crawl depth and word count, overridable in the mapping file. |
+| Should the crawler render JavaScript? | Configurable. Default off — Umbraco and Sitecore output is server-rendered. |
+| What if the redirect map isn't deployed? | Matching degrades to content and title strategies; re-run discovery once redirects land. |
+| Compare images how? | By filename stem only. Format, dimensions, query string and CDN host all legitimately change. |
+| Handle cookie banners? | Strip a configurable list of chrome selectors before extracting content. |
+| Authentication? | Basic auth via environment variables for staging. Never a real user login. |
+| Where do results live? | Durable files in the repo: baselines, results, reports. Treated as migration evidence. |
+
+---
+
+## 5. `/speckit.plan`
+
+```
+/speckit.plan
+
+STACK
+TypeScript on Node. @playwright/test as both the runner and the HTTP client. typescript
+for types. No other dependencies — hand-write CSV parsing, URL normalisation, sitemap and
+robots parsing, text normalisation and diffing. Chromium only. Everything must run headless
+in CI.
+
+TOOL BOUNDARY
+@playwright/test is the runtime for all delivered code. The playwright-cli agent skill is
+for development only: exploring real pages while writing selectors, generating and healing
+tests, and inspecting traces when a run fails. Never emit deliverable code that shells out
+to playwright-cli.
+
+EXECUTION MODEL
+Three Playwright projects in one config, run in sequence as separate commands:
+  discover  -> crawls both sites, writes the mapping and reconciliation reports
+  capture   -> snapshots every source page to baseline files
+  parity    -> compares every target page against its baseline
+Data-driven: the mapping file is read synchronously at module scope so the runner can
+collect one test per page pair. Parallel workers, retries for network flake only.
+
+MODULE BOUNDARIES
+- crawler: root URL in, page inventory out. Sitemap and robots seeding, breadth-first
+  frontier with a fixed worker pool, URL normalisation, scope rules, two interchangeable
+  scrapers (fast HTTP+regex for server-rendered pages, real browser for JS-rendered).
+  Records per page: status, depth, title, h1, canonical, indexability, word count, slug,
+  a content identity hash, an inferred page type, and the URL it was discovered from.
+- resolver: two inventories in, mapping plus reconciliation reports out. Ordered matching
+  strategies with recorded method and confidence. Manual overrides win. Unmatched source
+  pages and orphan target pages are primary outputs.
+- fingerprint: a page in, a structure-agnostic content record out. Strips chrome, locates
+  the content region, extracts text with block boundaries preserved, plus headings, links,
+  image filename stems with alt text, document links, table cell values, form field names,
+  and all page metadata and structured data types.
+- comparator: two fingerprints in, a verdict with named checks out. Normalisation of text
+  and URLs, passage-presence coverage as the central check, unordered set diffs for
+  everything else, severity levels, thresholds by page tier.
+- reporters: per-page markdown attached to the test result; one estate-wide CSV.
+
+KEY TECHNICAL DECISIONS, with rationale — carry these into research.md
+1. Passage presence, not similarity scoring. A percentage tells nobody what to fix; a list
+   of missing sentences does.
+2. Text extraction by manual DOM tree walk inserting newlines at block boundaries, not
+   innerText. innerText requires layout and is unreliable on a detached clone; a clone is
+   needed so stripping chrome does not disturb the live page.
+3. Structured data must be read before scripts are stripped from the clone.
+4. Redirect probing as the primary URL matcher: request the old path against the new site
+   and follow the 301. It reuses the migration's own redirect map as ground truth.
+5. Content identity via sorted word-shingle hash, so pages can be paired across a total
+   URL restructure when no redirect exists.
+6. Image identity by filename stem, because format, size, query string and host all change.
+7. Asymmetric diffs: missing from target is a defect, extra on target is information.
+8. Form fields exclude framework tokens such as __RequestVerificationToken and __VIEWSTATE.
+9. Faceting and sorting query parameters are dropped during normalisation; pagination is
+   kept. This is what prevents infinite crawls.
+
+CONFIGURATION
+All via environment variables. At minimum: source and target base URLs, mapping, baseline,
+results and discovery directories, crawl mode, page and depth caps, concurrency, delay,
+include and exclude patterns, path-prefix scoping, redirect probing on/off, and staging
+credentials. Multi-site runs work by pointing the directory variables at per-site folders.
+
+QUALITY GATES
+Pilot against 50 pages before any full run. Tune the chrome-selector and ignore lists until
+every remaining failure is a genuine content defect, then scale.
+```
+
+---
+
+## 6. `/speckit.tasks` and quality gates
+
+```
+/speckit.tasks
+```
+
+```
+/speckit.checklist
+
+Generate a checklist that validates the spec itself before implementation:
+- Is every acceptance criterion observable without reading code?
+- Is any requirement phrased in a way that permits a structural or visual comparison?
+- Does every user story produce a durable artifact on disk?
+- Are all thresholds and selector lists configurable rather than implied constants?
+- Is any failure mode specified as "throws" rather than "records a failed check"?
+```
+
+```
+/speckit.analyze
+```
+
+Read the analyze output before implementing. The two contradictions it usually surfaces:
+the spec asks for structure-agnostic comparison while a task implies a selector-based
+assertion, and a task holds crawl results in memory in violation of Principle 2.
+
+---
+
+## 7. `/speckit.implement`
+
+Implement one user story at a time, not the whole task list. Each run:
+
+```
+/speckit.implement US1
+```
+
+…then `US2`, `US3`, `US4`, `US5`. Stop after each and pilot it for real before moving on.
+
+Pilot commands as the stories land:
+
+```bash
+# After US1+US2
+SOURCE_BASE=https://old.example.com TARGET_BASE=https://new.example.com \
+MAX_PAGES=100 npx playwright test --project=discover
+
+# After US3+US4
+SOURCE_BASE=https://old.example.com npx playwright test --project=capture
+TARGET_BASE=https://new.example.com npx playwright test --project=parity
+```
+
+---
+
+## 8. Where the Playwright agent-cli skill earns its place
+
+The skill gives Copilot a live browser. Use it during development, between Spec Kit steps.
+
+**Before implementing the fingerprint extractor — find the real content region.**
+
+```
+Using the playwright-cli skill, open https://old.example.com/about-us and
+https://new.example.com/about, take a snapshot of each, and tell me:
+- which container element holds the main editorial content on each site
+- which chrome elements (nav, footer, cookie banner, breadcrumbs, related links)
+  appear on every page and must be stripped before comparison
+- whether navigation and content are server-rendered or require JavaScript
+Propose concrete values for MAIN_SELECTORS and STRIP_SELECTORS based on what you see,
+and explain each addition.
+```
+
+That one prompt replaces a day of guessing, and those two lists are the single biggest
+driver of false-failure rate.
+
+**When a parity test fails and you cannot tell why.**
+
+```
+Using the playwright-cli skill, open the target URL from the failing test, snapshot it,
+and check whether the missing passages listed in the report are genuinely absent, hidden
+behind an accordion or tab, loaded lazily on scroll, or being stripped by one of our
+STRIP_SELECTORS. Tell me which, then propose the fix: extractor change, ignore rule,
+or a real content defect to raise.
+```
+
+Accordions and tabs are the classic case — content is in the DOM but a naive extractor
+misses it, or a strip selector eats it.
+
+**Also worth using it for:** inspecting a trace from a failed CI run; checking whether a
+JS-rendered site needs `CRAWL_MODE=browser`; confirming a redirect chain hop by hop;
+scaffolding the US7 behavioural tests (forms submit, search returns results, pagination
+works) by recording the real interactions rather than hand-writing selectors.
+
+**Do not use it for:** running the parity suite, crawling, or anything that must scale.
+
+---
+
+## 9. `.github/copilot-instructions.md`
+
+Spec Kit writes this file. Append the following — it is what stops Copilot drifting
+mid-session, after the constitution has scrolled out of context.
+
+```markdown
+## Migration parity harness — hard rules
+
+NEVER suggest:
+- Screenshot or pixel comparison (pixelmatch, toHaveScreenshot, image snapshots).
+  The target is a redesign; visual diffing is meaningless here.
+- innerHTML/outerHTML comparison, or assertions on the target's CSS classes, element
+  order, DOM depth or tag names.
+- Selectors coupled to source-platform markup (Sitecore field wrappers, Umbraco grid
+  classes). The target uses entirely different markup.
+- New npm dependencies. @playwright/test and typescript only.
+- Deliverable code that invokes playwright-cli. That skill is a development aid; the
+  runtime is @playwright/test.
+- Any request method other than GET against client systems.
+
+ALWAYS:
+- Compare normalised text and unordered sets, never sequences.
+- Treat "in source, absent from target" as a defect; "target only" as information.
+- Normalise before comparing: collapse whitespace; replace non-breaking spaces, smart
+  quotes, dash variants and ellipses with ASCII; lowercase for matching only.
+- Normalise URLs before comparing: drop scheme and host, drop the fragment, drop trailing
+  slashes, drop tracking and image-resize parameters, lowercase.
+- Compare images by filename stem only — format, size, query string and CDN host change.
+- Persist anything derived from a source site to disk immediately. Those systems are
+  being switched off.
+- Catch per-page errors and record them as failed checks. Never let one bad page end a
+  multi-thousand-page run.
+- Keep thresholds, selector lists and ignore rules in one configurable place.
+```
+
+---
+
+## 10. `/speckit.converge`
+
+```
+/speckit.converge
+```
+
+Repeat implement → converge until it reports **Converged**. Then run the real pilot:
+100-page discovery, review `discovery-summary.md`, tune, and only then scale to the estate.
+
+---
+
+## 11. Operating notes
+
+- **Crawl politely.** The source sites are live production. Agree a window, keep
+  concurrency low, add a delay, exclude the bot user-agent from analytics, and confirm the
+  WAF will not block you. Get this in writing before the first full crawl.
+- **Pilot at 100 pages.** The first run always finds a trap — a faceted listing, an event
+  calendar, infinite pagination. Add it to the exclude patterns before scaling.
+- **Redirect map timing.** The strongest URL matcher needs the target's 301s deployed. If
+  they are not ready, disable redirect probing and re-run discovery once they land; match
+  quality jumps sharply.
+- **Capture is a deadline, not a task.** Baselines must exist before the old estate is
+  retired. Commit them or archive them to blob storage. Put the decommission date in the
+  plan as a hard constraint.
+- **Rendered HTML is not the whole truth.** US8 is the one that catches a content type
+  that never migrated at all. Do not let it get dropped as "nice to have" — schedule it.
