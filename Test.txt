@@ -1,475 +1,737 @@
-# Migration parity harness — Spec Kit master brief
-
-Spec-Driven Development brief for building a CMS migration validation harness
-(Umbraco 13 / Sitecore → Umbraco 17) inside a client VM, using **GitHub Copilot**,
-**[Spec Kit](https://github.com/github/spec-kit)** and the
-**[Playwright agent-cli skill](https://playwright.dev/agent-cli/skills)**.
-
-Every fenced block below is copy-paste ready. Work down the file in order.
-
----
-
-## 0. VM setup
-
-```bash
-# Spec Kit (needs Python 3.11+, uv, git)
-uv tool install specify-cli                     # or --from git+https://github.com/github/spec-kit.git@vX.Y.Z
-specify init migration-parity --integration copilot
-cd migration-parity
-
-# Playwright test runner — the thing that actually runs the suite
-npm init -y
-npm i -D @playwright/test typescript
-npx playwright install chromium
-
-# Playwright agent-cli skill — teaches Copilot to drive a live browser
-npm i -D playwright-cli
-npx playwright-cli install --skills=agents      # -> .agents/skills/playwright-cli
-```
-
-If Copilot does not pick up `.agents/skills`, also run `npx playwright-cli install --skills`
-(Claude Code layout, `.claude/skills/playwright-cli`). Installing both is harmless.
-
-**Offline VM notes.** `specify` needs PyPI or GitHub; if both are blocked, ask for
-`specify-cli` to be vendored, or fall back to the plain-Copilot brief (`COPILOT_BRIEF.md`).
-If the Chromium download is blocked, request `PLAYWRIGHT_BROWSERS_PATH` pointed at a
-pre-seeded directory, or install distro Chromium and set `channel: 'chromium'`.
-
----
-
-## 1. Who does what
-
-Three tools, three jobs. Keep them straight or Copilot will conflate them.
-
-| Tool | Role |
-| --- | --- |
-| **Spec Kit** | Drives the build: constitution → spec → plan → tasks → implement → converge |
-| **`@playwright/test`** | The delivered artifact's runtime. Runs the crawl, capture and parity suites headlessly at scale. |
-| **`playwright-cli` skill** | Copilot's hands during development. Interactive exploration, test generation, failure healing, tracing. **Never** the production runtime. |
-
-> Put this distinction in the constitution. Left to itself Copilot will happily try to
-> crawl 5,000 pages by issuing `playwright-cli` commands one at a time.
-
----
-
-## 2. `/speckit.constitution`
-
-```
-/speckit.constitution
-
-Create the governing principles for a CMS migration validation harness. The project
-verifies that content survived a rebuild from Umbraco 13 and Sitecore onto Umbraco 17,
-across several public-facing sites, where the target templates, markup and URLs are
-deliberately different from the source.
-
-Principle 1 — Structure-agnostic comparison.
-The target is a redesign. Comparing HTML, DOM trees, CSS classes, element order or
-screenshots is forbidden: it produces false failures at a rate that makes the harness
-useless. All verification compares normalised text and unordered sets. Any proposal
-involving pixel diffing, image snapshots, toHaveScreenshot, innerHTML equality or
-assertions on target markup structure must be rejected outright.
-
-Principle 2 — Evidence before demolition.
-The source systems will be decommissioned and cannot be re-crawled. Anything derived
-from a source site must be persisted to disk as durable, human-readable JSON or CSV at
-the moment it is captured. Never hold source-derived state only in memory.
-
-Principle 3 — Absence is the headline finding.
-A page that failed to migrate produces no test, and therefore no failure. Reconciliation
-between the source and target page inventories is a first-class output, not a by-product.
-Every source page with no target counterpart must appear in a report a non-technical
-content owner can read.
-
-Principle 4 — Dependency minimalism.
-The harness runs in a restricted client VM with limited package access. @playwright/test
-and typescript are the only runtime dependencies. CSV parsing, URL normalisation, text
-diffing, sitemap parsing and robots parsing are hand-written. Adding a dependency
-requires explicit human approval.
-
-Principle 5 — Tunable, never hardcoded.
-Every threshold, selector list, ignore rule, base URL and credential is configurable via
-environment variables or data files. No site-specific value is ever embedded in code.
-
-Principle 6 — Fail loud, crash never.
-A malformed page, a timeout, or a 500 must produce a recorded failed check with a reason.
-An unhandled exception that terminates a multi-thousand-page run is a defect.
-
-Principle 7 — Tool boundaries.
-@playwright/test is the production runtime for all crawling and testing. The playwright-cli
-agent skill is a development aid only — used for interactive exploration, test scaffolding,
-trace inspection and failure diagnosis. Never generate a deliverable that invokes
-playwright-cli at runtime.
-
-Principle 8 — Read-only against client systems.
-The harness only performs GET requests against source and target sites. It never submits
-forms, never authenticates as a real user, and never writes to any CMS.
-```
-
----
-
-## 3. `/speckit.specify`
-
-Describe **what and why**. Resist naming files or libraries here — that is `/speckit.plan`.
-
-```
-/speckit.specify
-
-Build a migration validation harness that proves content survived a website rebuild.
-
-CONTEXT
-We are rebuilding several public-facing websites. Sources are Umbraco 13 (several sites)
-and Sitecore (several sites). The target for all of them is Umbraco 17. Content was
-migrated by a separate process. The target's page templates, component structure, markup
-and URL paths are all deliberately different from the source. My job is to prove that the
-content and data arrived intact, across the whole estate, before the old systems are
-switched off.
-
-I will supply only two things per site: the source root URL and the target root URL. I do
-not have a page inventory and will not hand-build one.
-
-THE CENTRAL PROBLEM
-Because the markup differs by design, comparing pages by their HTML or appearance is
-meaningless. Verification must be sensitive to content and blind to structure, ordering,
-nesting and styling.
-
-USER STORIES, in priority order. Each must be independently valuable and testable.
-
-US1 (P1) — Discover an estate from a root URL.
-As a QA engineer, I give the tool one root URL and receive a complete inventory of every
-page on that domain, so I never hand-maintain a page list.
-Acceptance: seeds from sitemap.xml including sitemap indexes, then follows internal links
-breadth-first; stays on the domain; honours robots.txt; deduplicates URLs that differ only
-by trailing slash, casing, fragment or tracking parameters; excludes CMS back-office paths;
-records non-HTML assets such as PDFs separately rather than crawling them; survives
-individual page failures; and is bounded by configurable page and depth limits so that
-faceted listings and calendars cannot trap it.
-
-US2 (P1) — Pair source pages with target pages despite changed URLs.
-As a QA engineer, I receive a source-to-target URL mapping generated automatically, with
-the matching method and a confidence score recorded for every pair, so I only hand-review
-the uncertain ones.
-Acceptance: multiple independent matching strategies are attempted in confidence order,
-including asking the target site to resolve the old path via its own redirect map;
-hand-written overrides always take precedence; low-confidence pairs are flagged for
-review; re-running after edits is cheap.
-
-US3 (P1) — Preserve evidence of the source before decommission.
-As a migration lead, I capture the content of every source page to durable files before
-the old systems are retired, so verification remains possible after they are gone.
-Acceptance: one persisted record per source page; re-runnable; safe to commit or archive.
-
-US4 (P1) — Verify content parity for a page pair.
-As a QA engineer, I learn whether a target page contains everything its source page
-contained, and if not, exactly which content is missing, expressed as the actual missing
-sentences rather than a similarity score.
-Acceptance: every passage of source body text must be found somewhere in the target page,
-regardless of where; headings, links, images, downloadable documents, table values and
-form fields are compared as unordered sets; page metadata and SEO signals are compared;
-content present only on the target is reported as information, not failure; verdicts are
-pass, warn or fail with named checks and severities; thresholds vary by page importance.
-
-US5 (P1) — Reconcile the two estates.
-As a content owner, I receive a plain-language report of every source page with no target
-counterpart, every target-only page, and every document present on one side but not the
-other, so missing content is found even though no test exists for it.
-Acceptance: readable in a spreadsheet by a non-technical person; each row states the
-likely cause.
-
-US6 (P2) — Triage results without reading code.
-As a content owner, I open one spreadsheet listing every page, its verdict, its coverage
-percentage, which checks failed and a sample of the missing content, sorted worst-first.
-
-US7 (P2) — Check the whole estate cheaply.
-As a QA engineer, I verify status code, final redirect target, canonical URL, indexability
-and title presence for every URL in the estate quickly, reserving deep content comparison
-for the most important pages plus a sample of each page type, because template-level
-defects are the ones that actually occur.
-
-US8 (P3) — Verify data beyond what is rendered.
-As a migration lead, I compare content field by field between the source and target content
-APIs, because rendered HTML only shows what is published and visible, and cannot reveal a
-dropped property, an emptied rich-text field, a lost language variant, or an entire content
-type that never migrated.
-
-US9 (P3) — Run the whole estate in one pipeline.
-As a QA lead, I run every site through discovery, capture and parity in one command, and
-receive one merged report with a site column.
-
-SUCCESS CRITERIA
-- Given only two root URLs, the harness produces a reviewed mapping with no hand-authored
-  page list.
-- With the target's redirect map deployed, at least 90% of source pages are paired
-  automatically at confidence 0.9 or above.
-- On a 50-page pilot, fewer than 5% of reported failures are false positives caused by
-  template differences rather than missing content.
-- Every failure report names the specific missing content, so a content author can act on
-  it without opening the codebase or the source site.
-- A 5,000-page estate completes discovery in under an hour on a single VM.
-- Zero writes are made to any client system.
-
-EDGE CASES TO HANDLE
-Pages behind basic auth on staging; self-signed certificates; JS-rendered navigation;
-paginated listings; multilingual sites with hreflang; a site living under a path prefix on
-a shared domain; source pages intentionally dropped from the rebuild; target pages that are
-new content; the same content reachable at several source URLs; cookie banners and consent
-overlays; redirect chains; noindex pages.
-
-OUT OF SCOPE
-Performance testing, accessibility auditing, visual or brand review, load testing, security
-testing, and any modification of either CMS.
-```
-
----
-
-## 4. `/speckit.clarify`
-
-Run it, then answer from this crib sheet. Pre-empting these stops the spec drifting.
-
-```
-/speckit.clarify
-```
-
-| Likely question | Answer |
-| --- | --- |
-| How similar must content be to pass? | Not a similarity score. Every source passage of 25+ characters must appear verbatim in the target's normalised text. Coverage = found ÷ total. |
-| What about reordered sections? | Passes. All comparison is unordered. |
-| What if the target rewords copy? | That is a real finding. Report it; do not fuzzy-match it away. Editorial rewrites go in the overrides/ignore list deliberately. |
-| How are page importance tiers set? | Inferred during discovery from crawl depth and word count, overridable in the mapping file. |
-| Should the crawler render JavaScript? | Configurable. Default off — Umbraco and Sitecore output is server-rendered. |
-| What if the redirect map isn't deployed? | Matching degrades to content and title strategies; re-run discovery once redirects land. |
-| Compare images how? | By filename stem only. Format, dimensions, query string and CDN host all legitimately change. |
-| Handle cookie banners? | Strip a configurable list of chrome selectors before extracting content. |
-| Authentication? | Basic auth via environment variables for staging. Never a real user login. |
-| Where do results live? | Durable files in the repo: baselines, results, reports. Treated as migration evidence. |
-
----
-
-## 5. `/speckit.plan`
-
-```
-/speckit.plan
-
-STACK
-TypeScript on Node. @playwright/test as both the runner and the HTTP client. typescript
-for types. No other dependencies — hand-write CSV parsing, URL normalisation, sitemap and
-robots parsing, text normalisation and diffing. Chromium only. Everything must run headless
-in CI.
-
-TOOL BOUNDARY
-@playwright/test is the runtime for all delivered code. The playwright-cli agent skill is
-for development only: exploring real pages while writing selectors, generating and healing
-tests, and inspecting traces when a run fails. Never emit deliverable code that shells out
-to playwright-cli.
-
-EXECUTION MODEL
-Three Playwright projects in one config, run in sequence as separate commands:
-  discover  -> crawls both sites, writes the mapping and reconciliation reports
-  capture   -> snapshots every source page to baseline files
-  parity    -> compares every target page against its baseline
-Data-driven: the mapping file is read synchronously at module scope so the runner can
-collect one test per page pair. Parallel workers, retries for network flake only.
-
-MODULE BOUNDARIES
-- crawler: root URL in, page inventory out. Sitemap and robots seeding, breadth-first
-  frontier with a fixed worker pool, URL normalisation, scope rules, two interchangeable
-  scrapers (fast HTTP+regex for server-rendered pages, real browser for JS-rendered).
-  Records per page: status, depth, title, h1, canonical, indexability, word count, slug,
-  a content identity hash, an inferred page type, and the URL it was discovered from.
-- resolver: two inventories in, mapping plus reconciliation reports out. Ordered matching
-  strategies with recorded method and confidence. Manual overrides win. Unmatched source
-  pages and orphan target pages are primary outputs.
-- fingerprint: a page in, a structure-agnostic content record out. Strips chrome, locates
-  the content region, extracts text with block boundaries preserved, plus headings, links,
-  image filename stems with alt text, document links, table cell values, form field names,
-  and all page metadata and structured data types.
-- comparator: two fingerprints in, a verdict with named checks out. Normalisation of text
-  and URLs, passage-presence coverage as the central check, unordered set diffs for
-  everything else, severity levels, thresholds by page tier.
-- reporters: per-page markdown attached to the test result; one estate-wide CSV.
-
-KEY TECHNICAL DECISIONS, with rationale — carry these into research.md
-1. Passage presence, not similarity scoring. A percentage tells nobody what to fix; a list
-   of missing sentences does.
-2. Text extraction by manual DOM tree walk inserting newlines at block boundaries, not
-   innerText. innerText requires layout and is unreliable on a detached clone; a clone is
-   needed so stripping chrome does not disturb the live page.
-3. Structured data must be read before scripts are stripped from the clone.
-4. Redirect probing as the primary URL matcher: request the old path against the new site
-   and follow the 301. It reuses the migration's own redirect map as ground truth.
-5. Content identity via sorted word-shingle hash, so pages can be paired across a total
-   URL restructure when no redirect exists.
-6. Image identity by filename stem, because format, size, query string and host all change.
-7. Asymmetric diffs: missing from target is a defect, extra on target is information.
-8. Form fields exclude framework tokens such as __RequestVerificationToken and __VIEWSTATE.
-9. Faceting and sorting query parameters are dropped during normalisation; pagination is
-   kept. This is what prevents infinite crawls.
-
-CONFIGURATION
-All via environment variables. At minimum: source and target base URLs, mapping, baseline,
-results and discovery directories, crawl mode, page and depth caps, concurrency, delay,
-include and exclude patterns, path-prefix scoping, redirect probing on/off, and staging
-credentials. Multi-site runs work by pointing the directory variables at per-site folders.
-
-QUALITY GATES
-Pilot against 50 pages before any full run. Tune the chrome-selector and ignore lists until
-every remaining failure is a genuine content defect, then scale.
-```
-
----
-
-## 6. `/speckit.tasks` and quality gates
-
-```
-/speckit.tasks
-```
-
-```
-/speckit.checklist
-
-Generate a checklist that validates the spec itself before implementation:
-- Is every acceptance criterion observable without reading code?
-- Is any requirement phrased in a way that permits a structural or visual comparison?
-- Does every user story produce a durable artifact on disk?
-- Are all thresholds and selector lists configurable rather than implied constants?
-- Is any failure mode specified as "throws" rather than "records a failed check"?
-```
-
-```
-/speckit.analyze
-```
-
-Read the analyze output before implementing. The two contradictions it usually surfaces:
-the spec asks for structure-agnostic comparison while a task implies a selector-based
-assertion, and a task holds crawl results in memory in violation of Principle 2.
-
----
-
-## 7. `/speckit.implement`
-
-Implement one user story at a time, not the whole task list. Each run:
-
-```
-/speckit.implement US1
-```
-
-…then `US2`, `US3`, `US4`, `US5`. Stop after each and pilot it for real before moving on.
-
-Pilot commands as the stories land:
-
-```bash
-# After US1+US2
-SOURCE_BASE=https://old.example.com TARGET_BASE=https://new.example.com \
-MAX_PAGES=100 npx playwright test --project=discover
-
-# After US3+US4
-SOURCE_BASE=https://old.example.com npx playwright test --project=capture
-TARGET_BASE=https://new.example.com npx playwright test --project=parity
-```
-
----
-
-## 8. Where the Playwright agent-cli skill earns its place
-
-The skill gives Copilot a live browser. Use it during development, between Spec Kit steps.
-
-**Before implementing the fingerprint extractor — find the real content region.**
-
-```
-Using the playwright-cli skill, open https://old.example.com/about-us and
-https://new.example.com/about, take a snapshot of each, and tell me:
-- which container element holds the main editorial content on each site
-- which chrome elements (nav, footer, cookie banner, breadcrumbs, related links)
-  appear on every page and must be stripped before comparison
-- whether navigation and content are server-rendered or require JavaScript
-Propose concrete values for MAIN_SELECTORS and STRIP_SELECTORS based on what you see,
-and explain each addition.
-```
-
-That one prompt replaces a day of guessing, and those two lists are the single biggest
-driver of false-failure rate.
-
-**When a parity test fails and you cannot tell why.**
-
-```
-Using the playwright-cli skill, open the target URL from the failing test, snapshot it,
-and check whether the missing passages listed in the report are genuinely absent, hidden
-behind an accordion or tab, loaded lazily on scroll, or being stripped by one of our
-STRIP_SELECTORS. Tell me which, then propose the fix: extractor change, ignore rule,
-or a real content defect to raise.
-```
-
-Accordions and tabs are the classic case — content is in the DOM but a naive extractor
-misses it, or a strip selector eats it.
-
-**Also worth using it for:** inspecting a trace from a failed CI run; checking whether a
-JS-rendered site needs `CRAWL_MODE=browser`; confirming a redirect chain hop by hop;
-scaffolding the US7 behavioural tests (forms submit, search returns results, pagination
-works) by recording the real interactions rather than hand-writing selectors.
-
-**Do not use it for:** running the parity suite, crawling, or anything that must scale.
-
----
-
-## 9. `.github/copilot-instructions.md`
-
-Spec Kit writes this file. Append the following — it is what stops Copilot drifting
-mid-session, after the constitution has scrolled out of context.
-
-```markdown
-## Migration parity harness — hard rules
-
-NEVER suggest:
-- Screenshot or pixel comparison (pixelmatch, toHaveScreenshot, image snapshots).
-  The target is a redesign; visual diffing is meaningless here.
-- innerHTML/outerHTML comparison, or assertions on the target's CSS classes, element
-  order, DOM depth or tag names.
-- Selectors coupled to source-platform markup (Sitecore field wrappers, Umbraco grid
-  classes). The target uses entirely different markup.
-- New npm dependencies. @playwright/test and typescript only.
-- Deliverable code that invokes playwright-cli. That skill is a development aid; the
-  runtime is @playwright/test.
-- Any request method other than GET against client systems.
-
-ALWAYS:
-- Compare normalised text and unordered sets, never sequences.
-- Treat "in source, absent from target" as a defect; "target only" as information.
-- Normalise before comparing: collapse whitespace; replace non-breaking spaces, smart
-  quotes, dash variants and ellipses with ASCII; lowercase for matching only.
-- Normalise URLs before comparing: drop scheme and host, drop the fragment, drop trailing
-  slashes, drop tracking and image-resize parameters, lowercase.
-- Compare images by filename stem only — format, size, query string and CDN host change.
-- Persist anything derived from a source site to disk immediately. Those systems are
-  being switched off.
-- Catch per-page errors and record them as failed checks. Never let one bad page end a
-  multi-thousand-page run.
-- Keep thresholds, selector lists and ignore rules in one configurable place.
-```
-
----
-
-## 10. `/speckit.converge`
-
-```
-/speckit.converge
-```
-
-Repeat implement → converge until it reports **Converged**. Then run the real pilot:
-100-page discovery, review `discovery-summary.md`, tune, and only then scale to the estate.
-
----
-
-## 11. Operating notes
-
-- **Crawl politely.** The source sites are live production. Agree a window, keep
-  concurrency low, add a delay, exclude the bot user-agent from analytics, and confirm the
-  WAF will not block you. Get this in writing before the first full crawl.
-- **Pilot at 100 pages.** The first run always finds a trap — a faceted listing, an event
-  calendar, infinite pagination. Add it to the exclude patterns before scaling.
-- **Redirect map timing.** The strongest URL matcher needs the target's 301s deployed. If
-  they are not ready, disable redirect probing and re-run discovery once they land; match
-  quality jumps sharply.
-- **Capture is a deadline, not a task.** Baselines must exist before the old estate is
-  retired. Commit them or archive them to blob storage. Put the decommission date in the
-  plan as a hard constraint.
-- **Rendered HTML is not the whole truth.** US8 is the one that catches a content type
-  that never migrated at all. Do not let it get dropped as "nice to have" — schedule it.
+#Requires -Version 5.1
+<#
+.SYNOPSIS
+    Keeps a SharePoint Online document set under 4500 items and moves older overflow to a target document set.
+
+.DESCRIPTION
+    Reads a CSV file containing SiteUrl, SourceDocumentSetPath, and TargetDocumentSetPath.
+    For each row, the script connects to the SharePoint Online site and inspects the source
+    document set. If the item count exceeds the configured cap (default 4500), the oldest items
+    are moved to the target document set until the source document set is back at or under the cap.
+
+    This is intended for SharePoint Online document sets that hit the 5000-item threshold and need
+    the older content split into a separate overflow document set while keeping the active document
+    set under the recommended operating threshold.
+
+.PARAMETER CsvInputPath
+    Path to the CSV file with required columns:
+    - SiteUrl               : SharePoint Online site URL, for example https://tenant.sharepoint.com/sites/Finance
+    - SourceDocumentSetPath : Source document set path, for example /sites/Finance/Shared Documents/DocSet-Active
+    - TargetDocumentSetPath : Overflow document set path, for example /sites/Finance/Shared Documents/DocSet-Archive
+
+.PARAMETER ClientId
+    Azure AD application client ID used for SharePoint Online authentication.
+
+.PARAMETER TargetUsername
+    SharePoint Online username used for authentication.
+
+.PARAMETER TargetPassword
+    SharePoint Online password used for authentication.
+
+.PARAMETER MaxAllowedItems
+    Maximum number of items to keep in the active source document set.
+    Default: 4500
+
+.PARAMETER OutputFolder
+    Folder path for output files.
+    Default: ./SplitDocumentSetLog-{timestamp}
+
+.EXAMPLE
+    .\Split-DocumentSetByItemCount.ps1 `
+        -CsvInputPath ".\DocumentSetSplit-Input.csv" `
+        -ClientId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+        -TargetUsername "admin@contoso.onmicrosoft.com" `
+        -TargetPassword "Password123!" `
+        -MaxAllowedItems 4500 `
+        -OutputFolder ".\SplitDocumentSetLog"
+
+    .\Split-DocumentSetByItemCount.ps1 `
+        -CsvInputPath ".\DocumentSetSplit-Input.csv" `
+        -ClientId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+        -TargetUsername "admin@contoso.onmicrosoft.com" `
+        -TargetPassword "Password123!" `
+        -MaxAllowedItems 4500 `
+        -PreviewOnly `
+        -OutputFolder ".\SplitDocumentSetPreview"
+#>
+
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$CsvInputPath,
+
+    [Parameter(Mandatory = $true)]
+    [string]$ClientId,
+
+    [Parameter(Mandatory = $true)]
+    [string]$TargetUsername,
+
+    [Parameter(Mandatory = $true)]
+    [string]$TargetPassword,
+
+    [int]$MaxAllowedItems = 4500,
+
+    [switch]$PreviewOnly,
+
+    [string]$OutputFolder = "./SplitDocumentSetLog-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Continue"
+
+# ==========================================
+# Global Variables & Initialization
+# ==========================================
+$script:ProcessedRows  = 0
+$script:SuccessfulRows = 0
+$script:FailedRows     = 0
+$script:Credential     = $null
+$script:CurrentSiteUrl = ""
+
+$script:ResultWriter   = $null
+$script:ResultFilePath = $null
+$script:PreviewWriter  = $null
+$script:PreviewFilePath = $null
+$script:ResultColumns  = @(
+    "RowNumber",
+    "SiteUrl",
+    "SourceDocumentSetPath",
+    "TargetDocumentSetPath",
+    "SourceItemCount",
+    "TargetItemCount",
+    "MovedItemCount",
+    "RetainedItemCount",
+    "Status",
+    "IsSuccessful",
+    "Message",
+    "Timestamp"
+)
+
+if (-not (Test-Path $CsvInputPath)) {
+    throw "CSV input file not found: $CsvInputPath"
+}
+
+if (-not (Test-Path $OutputFolder)) {
+    New-Item -ItemType Directory -Path $OutputFolder -Force | Out-Null
+    Write-Host "Created output folder: $OutputFolder"
+}
+
+# ==========================================
+# Function: Initialize Credential
+# ==========================================
+function Initialize-Credential {
+    [CmdletBinding()]
+    param()
+
+    $securePassword = ConvertTo-SecureString $TargetPassword -AsPlainText -Force
+    $script:Credential = New-Object System.Management.Automation.PSCredential($TargetUsername, $securePassword)
+}
+
+# ==========================================
+# Function: Connect to SPO Site
+# ==========================================
+function Get-PnPConnectionForSite {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SiteUrl
+    )
+
+    if ($script:CurrentSiteUrl -eq $SiteUrl) {
+        return
+    }
+
+    try {
+        Write-Verbose "Connecting to $SiteUrl"
+        Connect-PnPOnline -Url $SiteUrl -Credentials $script:Credential -ClientId $ClientId -ErrorAction Stop
+        $script:CurrentSiteUrl = $SiteUrl
+        Write-Host "Connected: $SiteUrl"
+    }
+    catch {
+        throw "Failed to connect to site $SiteUrl : $_"
+    }
+}
+
+# ==========================================
+# Function: Validate CSV Columns
+# ==========================================
+function Test-CsvFormat {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [array]$Rows
+    )
+
+    if ($Rows.Count -eq 0) {
+        throw "CSV file is empty: $CsvInputPath"
+    }
+
+    $first = $Rows[0]
+    $requiredColumns = @("SiteUrl", "SourceDocumentSetPath", "TargetDocumentSetPath")
+
+    foreach ($column in $requiredColumns) {
+        if (-not ($first.PSObject.Properties.Name -contains $column)) {
+            throw "CSV must contain required column: $column"
+        }
+    }
+}
+
+# ==========================================
+# Function: Initialize Result Writer
+# ==========================================
+function Initialize-ResultWriter {
+    [CmdletBinding()]
+    param()
+
+    $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $script:ResultFilePath = Join-Path $OutputFolder "Results_$timestamp.csv"
+
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    $script:ResultWriter = New-Object System.IO.StreamWriter($script:ResultFilePath, $false, $encoding)
+    $script:ResultWriter.AutoFlush = $true
+    $script:ResultWriter.WriteLine((ConvertTo-CsvLine -Values $script:ResultColumns))
+}
+
+# ==========================================
+# Function: Write One Result Row
+# ==========================================
+function Write-ResultRow {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [PSCustomObject]$Row
+    )
+
+    $values = foreach ($col in $script:ResultColumns) {
+        if ($Row.PSObject.Properties.Name -contains $col) { $Row.$col } else { "" }
+    }
+    $script:ResultWriter.WriteLine((ConvertTo-CsvLine -Values $values))
+}
+
+# ==========================================
+# Function: Initialize Preview Writer
+# ==========================================
+function Initialize-PreviewWriter {
+    [CmdletBinding()]
+    param()
+
+    $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $script:PreviewFilePath = Join-Path $OutputFolder "DocumentSetMovePlan_$timestamp.csv"
+
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    $script:PreviewWriter = New-Object System.IO.StreamWriter($script:PreviewFilePath, $false, $encoding)
+    $script:PreviewWriter.AutoFlush = $true
+
+    $previewColumns = @(
+        "SiteUrl",
+        "SourceDocumentSetPath",
+        "TargetDocumentSetPath",
+        "FileName",
+        "FileUrl",
+        "Action",
+        "ModifiedDate",
+        "MoveReason",
+        "Timestamp"
+    )
+
+    $script:PreviewWriter.WriteLine((ConvertTo-CsvLine -Values $previewColumns))
+}
+
+# ==========================================
+# Function: Write One Preview Row
+# ==========================================
+function Write-PreviewRow {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [PSCustomObject]$Row
+    )
+
+    $previewColumns = @(
+        "SiteUrl",
+        "SourceDocumentSetPath",
+        "TargetDocumentSetPath",
+        "FileName",
+        "FileUrl",
+        "Action",
+        "ModifiedDate",
+        "MoveReason",
+        "Timestamp"
+    )
+
+    $values = foreach ($col in $previewColumns) {
+        if ($Row.PSObject.Properties.Name -contains $col) { $Row.$col } else { "" }
+    }
+    $script:PreviewWriter.WriteLine((ConvertTo-CsvLine -Values $values))
+}
+
+# ==========================================
+# Function: CSV-Quote One Line
+# ==========================================
+function ConvertTo-CsvLine {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$Values
+    )
+
+    $escaped = foreach ($v in $Values) {
+        if ($null -eq $v) {
+            ''
+        }
+        else {
+            $s = [string]$v
+            if ($s -match '[,"\r\n]') {
+                '"' + ($s -replace '"', '""') + '"'
+            }
+            else {
+                $s
+            }
+        }
+    }
+    [string]::Join(',', $escaped)
+}
+
+# ==========================================
+# Function: Resolve Document Set URL
+# ==========================================
+function Resolve-DocumentSetUrl {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SiteUrl,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DocumentSetPath
+    )
+
+    $trimmedPath = $DocumentSetPath.Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmedPath)) {
+        throw "Document set path is empty."
+    }
+
+    if ($trimmedPath -match '^https?://') {
+        return $trimmedPath.TrimEnd('/')
+    }
+
+    $base = $SiteUrl.TrimEnd('/')
+    if ($trimmedPath.StartsWith('/')) {
+        return "$base$trimmedPath"
+    }
+
+    return "$base/$trimmedPath"
+}
+
+# ==========================================
+# Function: Ensure Document Set Exists
+# ==========================================
+function Ensure-DocumentSetExists {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SiteUrl,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DocumentSetPath
+    )
+
+    $fullUrl = Resolve-DocumentSetUrl -SiteUrl $SiteUrl -DocumentSetPath $DocumentSetPath
+
+    $existingFolder = Get-PnPFolder -Url $fullUrl -ErrorAction SilentlyContinue
+    if ($null -ne $existingFolder) {
+        return $fullUrl
+    }
+
+    $folderName = [System.IO.Path]::GetFileName($fullUrl.TrimEnd('/'))
+    $parentUrl = $fullUrl.Substring(0, $fullUrl.LastIndexOf('/'))
+    if ([string]::IsNullOrWhiteSpace($parentUrl)) {
+        throw "Cannot determine parent folder for $DocumentSetPath"
+    }
+
+    $parentFolder = Get-PnPFolder -Url $parentUrl -ErrorAction Stop
+    $folder = New-PnPFolder -Name $folderName -Folder $parentUrl -ErrorAction Stop
+    return $folder.ServerRelativeUrl
+}
+
+# ==========================================
+# Function: Get Files in Document Set
+# ==========================================
+function Get-DocumentSetFiles {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SiteUrl,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DocumentSetPath
+    )
+
+    $fullUrl = Resolve-DocumentSetUrl -SiteUrl $SiteUrl -DocumentSetPath $DocumentSetPath
+    $folder = Get-PnPFolder -Url $fullUrl -Includes Files -ErrorAction Stop
+
+    if ($null -eq $folder.Files) {
+        return @()
+    }
+
+    return @($folder.Files)
+}
+
+# ==========================================
+# Function: Get Sort Key for File
+# ==========================================
+function Get-FileSortTimestamp {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$File
+    )
+
+    $timeValue = $null
+
+    if ($null -ne $File.TimeLastModified) {
+        $timeValue = $File.TimeLastModified
+    }
+    elseif ($null -ne $File.TimeCreated) {
+        $timeValue = $File.TimeCreated
+    }
+    elseif ($null -ne $File.LastModified) {
+        $timeValue = $File.LastModified
+    }
+    elseif ($null -ne $File.Modified) {
+        $timeValue = $File.Modified
+    }
+
+    if ($null -eq $timeValue) {
+        return [DateTime]::MinValue
+    }
+
+    $dateValue = [DateTime]$timeValue
+    return $dateValue
+}
+
+# ==========================================
+# Function: Move Overflow Items to Target Document Set
+# ==========================================
+function Move-OverflowItemsToTargetDocumentSet {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SiteUrl,
+
+        [Parameter(Mandatory = $true)]
+        [string]$SourceDocumentSetPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$TargetDocumentSetPath,
+
+        [Parameter(Mandatory = $true)]
+        [int]$MaxAllowedItems,
+
+        [switch]$PreviewOnly
+    )
+
+    $sourceFullUrl = Resolve-DocumentSetUrl -SiteUrl $SiteUrl -DocumentSetPath $SourceDocumentSetPath
+    $targetFullUrl = Resolve-DocumentSetUrl -SiteUrl $SiteUrl -DocumentSetPath $TargetDocumentSetPath
+
+    if ($sourceFullUrl -eq $targetFullUrl) {
+        throw "Source and target document set paths are identical. Please choose different paths."
+    }
+
+    $sourceFiles = @(Get-DocumentSetFiles -SiteUrl $SiteUrl -DocumentSetPath $SourceDocumentSetPath)
+    $sourceItemCount = $sourceFiles.Count
+
+    if ($sourceItemCount -le $MaxAllowedItems) {
+        $targetFullUrl = Ensure-DocumentSetExists -SiteUrl $SiteUrl -DocumentSetPath $TargetDocumentSetPath
+        $targetFiles = @(Get-DocumentSetFiles -SiteUrl $SiteUrl -DocumentSetPath $TargetDocumentSetPath)
+
+        if ($PreviewOnly) {
+            foreach ($file in $sourceFiles) {
+                $previewRow = [PSCustomObject]@{
+                    SiteUrl = $SiteUrl
+                    SourceDocumentSetPath = $SourceDocumentSetPath
+                    TargetDocumentSetPath = $TargetDocumentSetPath
+                    FileName = $file.Name
+                    FileUrl = $file.ServerRelativeUrl
+                    Action = "Keep"
+                    ModifiedDate = if ($null -ne $file.TimeLastModified) { $file.TimeLastModified.ToString("s") } else { "" }
+                    MoveReason = "Within max item cap"
+                    Timestamp = (Get-Date).ToString("s")
+                }
+                Write-PreviewRow -Row $previewRow
+            }
+        }
+
+        return [PSCustomObject]@{
+            SourceItemCount = $sourceItemCount
+            TargetItemCount = $targetFiles.Count
+            MovedItemCount = 0
+            RetainedItemCount = $sourceItemCount
+            Status = if ($PreviewOnly) { "PreviewOnlyNoAction" } else { "NoAction" }
+            IsSuccessful = $true
+            Message = "Source document set has $sourceItemCount items and is already within the $MaxAllowedItems item cap."
+        }
+    }
+
+    $targetFullUrl = Ensure-DocumentSetExists -SiteUrl $SiteUrl -DocumentSetPath $TargetDocumentSetPath
+
+    $overflowCount = $sourceItemCount - $MaxAllowedItems
+    $sortedFiles = @($sourceFiles | Sort-Object { Get-FileSortTimestamp -File $_ })
+    $filesToMove = @($sortedFiles | Select-Object -First $overflowCount)
+    $moveLookup = @{}
+    foreach ($file in $filesToMove) {
+        if ($null -ne $file.ServerRelativeUrl) {
+            $moveLookup[$file.ServerRelativeUrl] = $true
+        }
+    }
+    $movedCount = 0
+
+    if ($PreviewOnly) {
+        foreach ($file in $sortedFiles) {
+            $shouldMove = $moveLookup.ContainsKey($file.ServerRelativeUrl)
+            $previewRow = [PSCustomObject]@{
+                SiteUrl = $SiteUrl
+                SourceDocumentSetPath = $SourceDocumentSetPath
+                TargetDocumentSetPath = $TargetDocumentSetPath
+                FileName = $file.Name
+                FileUrl = $file.ServerRelativeUrl
+                Action = if ($shouldMove) { "Move" } else { "Keep" }
+                ModifiedDate = if ($null -ne $file.TimeLastModified) { $file.TimeLastModified.ToString("s") } else { "" }
+                MoveReason = if ($shouldMove) { "Older than max item threshold" } else { "Newest items kept in source" }
+                Timestamp = (Get-Date).ToString("s")
+            }
+            Write-PreviewRow -Row $previewRow
+            if ($shouldMove) { $movedCount++ }
+        }
+
+        $updatedTargetFiles = @(Get-DocumentSetFiles -SiteUrl $SiteUrl -DocumentSetPath $TargetDocumentSetPath)
+        return [PSCustomObject]@{
+            SourceItemCount = $sourceItemCount
+            TargetItemCount = $updatedTargetFiles.Count
+            MovedItemCount = $movedCount
+            RetainedItemCount = $sourceItemCount - $movedCount
+            Status = "PreviewOnlySplit"
+            IsSuccessful = $true
+            Message = "Preview plan: $movedCount oldest items would move from '$SourceDocumentSetPath' to '$TargetDocumentSetPath'. Source document set would retain $($sourceItemCount - $movedCount) items."
+        }
+    }
+
+    foreach ($file in $filesToMove) {
+        $sourceUrl = $file.ServerRelativeUrl
+        $fileName = $file.Name
+        $targetFileUrl = "$targetFullUrl/$fileName"
+
+        try {
+            Move-PnPFile -SourceUrl $sourceUrl -TargetUrl $targetFileUrl -Force -ErrorAction Stop
+            $movedCount++
+        }
+        catch {
+            throw "Failed to move file '$fileName' from '$sourceUrl' to '$targetFileUrl': $_"
+        }
+    }
+
+    $updatedSourceFiles = @(Get-DocumentSetFiles -SiteUrl $SiteUrl -DocumentSetPath $SourceDocumentSetPath)
+    $updatedTargetFiles = @(Get-DocumentSetFiles -SiteUrl $SiteUrl -DocumentSetPath $TargetDocumentSetPath)
+    $finalRetained = $updatedSourceFiles.Count
+
+    return [PSCustomObject]@{
+        SourceItemCount = $sourceItemCount
+        TargetItemCount = $updatedTargetFiles.Count
+        MovedItemCount = $movedCount
+        RetainedItemCount = $finalRetained
+        Status = "Split"
+        IsSuccessful = $true
+        Message = "Moved $movedCount oldest items from '$SourceDocumentSetPath' to '$TargetDocumentSetPath'. Source document set now contains $finalRetained items."
+    }
+}
+
+# ==========================================
+# Function: Invoke-SplitDocumentSetByItemCount
+# ==========================================
+function Invoke-SplitDocumentSetByItemCount {
+    [CmdletBinding()]
+    param()
+
+    $startTime = Get-Date
+    Write-Host "Reading CSV file: $CsvInputPath" -ForegroundColor Cyan
+
+    if ($PreviewOnly) {
+        Initialize-PreviewWriter
+        Write-Host "Preview mode enabled. No files will be moved; a move plan CSV will be generated instead." -ForegroundColor Yellow
+    }
+
+    $rows = Import-Csv -Path $CsvInputPath
+    Test-CsvFormat -Rows $rows
+
+    $totalRows = $rows.Count
+    Write-Host "Found $totalRows rows to process" -ForegroundColor Cyan
+
+    $rowIndex = 0
+    foreach ($csvRow in $rows) {
+        $rowIndex++
+
+        $siteUrl = $csvRow.SiteUrl
+        $sourceDocSetPath = $csvRow.SourceDocumentSetPath
+        $targetDocSetPath = $csvRow.TargetDocumentSetPath
+
+        if ($rowIndex % 10 -eq 0) {
+            Write-Host "Processing row $rowIndex of $totalRows..." -ForegroundColor Gray
+        }
+
+        # Skip blank rows.
+        if ([string]::IsNullOrWhiteSpace($siteUrl) -or [string]::IsNullOrWhiteSpace($sourceDocSetPath) -or [string]::IsNullOrWhiteSpace($targetDocSetPath)) {
+            $row = [PSCustomObject]@{
+                RowNumber = $rowIndex
+                SiteUrl = $siteUrl
+                SourceDocumentSetPath = $sourceDocSetPath
+                TargetDocumentSetPath = $targetDocSetPath
+                SourceItemCount = ""
+                TargetItemCount = ""
+                MovedItemCount = ""
+                RetainedItemCount = ""
+                Status = "Skipped"
+                IsSuccessful = $false
+                Message = "Missing required field (SiteUrl, SourceDocumentSetPath, or TargetDocumentSetPath)"
+                Timestamp = (Get-Date).ToString("s")
+            }
+            Write-ResultRow -Row $row
+            $script:ProcessedRows++
+            $script:FailedRows++
+            Write-Warning "Row $rowIndex skipped: Missing required fields"
+            continue
+        }
+
+        $connectionError = $null
+        try {
+            Get-PnPConnectionForSite -SiteUrl $siteUrl
+        }
+        catch {
+            $connectionError = $_.Exception.Message
+        }
+
+        if ($connectionError) {
+            $row = [PSCustomObject]@{
+                RowNumber = $rowIndex
+                SiteUrl = $siteUrl
+                SourceDocumentSetPath = $sourceDocSetPath
+                TargetDocumentSetPath = $targetDocSetPath
+                SourceItemCount = ""
+                TargetItemCount = ""
+                MovedItemCount = ""
+                RetainedItemCount = ""
+                Status = "Failed"
+                IsSuccessful = $false
+                Message = "Connection failed: $connectionError"
+                Timestamp = (Get-Date).ToString("s")
+            }
+            Write-ResultRow -Row $row
+            $script:ProcessedRows++
+            $script:FailedRows++
+            Write-Warning "Row $rowIndex failed: Could not connect to $siteUrl"
+            continue
+        }
+
+        $actionResult = $null
+        $status = "Failed"
+        $isSuccessful = $false
+        $message = ""
+
+        try {
+            $actionResult = Move-OverflowItemsToTargetDocumentSet -SiteUrl $siteUrl -SourceDocumentSetPath $sourceDocSetPath -TargetDocumentSetPath $targetDocSetPath -MaxAllowedItems $MaxAllowedItems -PreviewOnly:$PreviewOnly
+            $status = $actionResult.Status
+            $isSuccessful = $actionResult.IsSuccessful
+            $message = $actionResult.Message
+        }
+        catch {
+            $message = $_.Exception.Message
+            $status = "Failed"
+            $isSuccessful = $false
+        }
+
+        $row = [PSCustomObject]@{
+            RowNumber = $rowIndex
+            SiteUrl = $siteUrl
+            SourceDocumentSetPath = $sourceDocSetPath
+            TargetDocumentSetPath = $targetDocSetPath
+            SourceItemCount = if ($null -ne $actionResult) { $actionResult.SourceItemCount } else { "" }
+            TargetItemCount = if ($null -ne $actionResult) { $actionResult.TargetItemCount } else { "" }
+            MovedItemCount = if ($null -ne $actionResult) { $actionResult.MovedItemCount } else { "" }
+            RetainedItemCount = if ($null -ne $actionResult) { $actionResult.RetainedItemCount } else { "" }
+            Status = $status
+            IsSuccessful = $isSuccessful
+            Message = $message
+            Timestamp = (Get-Date).ToString("s")
+        }
+
+        Write-ResultRow -Row $row
+        $script:ProcessedRows++
+
+        if ($isSuccessful) {
+            $script:SuccessfulRows++
+            Write-Verbose "Row $rowIndex ($sourceDocSetPath): $message"
+        }
+        else {
+            $script:FailedRows++
+            Write-Warning "Row $rowIndex ($sourceDocSetPath): $message"
+        }
+    }
+
+    $endTime = Get-Date
+    $duration = $endTime - $startTime
+
+    $summaryFile = Join-Path $OutputFolder "Summary_$(Get-Date -Format 'yyyyMMdd-HHmmss').json"
+    $summary = @{
+        ExecutionTime  = "$($duration.Hours)h $($duration.Minutes)m $($duration.Seconds)s"
+        TotalRows      = $totalRows
+        ProcessedRows  = $script:ProcessedRows
+        SuccessfulRows = $script:SuccessfulRows
+        FailedRows     = $script:FailedRows
+        ResultFile     = $script:ResultFilePath
+        PreviewFile    = if ($PreviewOnly) { $script:PreviewFilePath } else { "" }
+        TimestampStart = $startTime.ToString("s")
+        TimestampEnd   = $endTime.ToString("s")
+    }
+
+    $summary | ConvertTo-Json | Set-Content -Path $summaryFile -Encoding UTF8
+
+    Write-Host ""
+    Write-Host "==========================================" -ForegroundColor Cyan
+    Write-Host "Document Set Split Summary" -ForegroundColor Cyan
+    Write-Host "==========================================" -ForegroundColor Cyan
+    Write-Host "Total Rows:       $($summary.TotalRows)"
+    Write-Host "Processed Rows:   $($summary.ProcessedRows)"
+    Write-Host "Successful Rows:  $($summary.SuccessfulRows)" -ForegroundColor Green
+    Write-Host "Failed Rows:      $($summary.FailedRows)" -ForegroundColor $(if ($summary.FailedRows -gt 0) { "Red" } else { "Green" })
+    Write-Host "Result CSV:       $($script:ResultFilePath)"
+    if ($PreviewOnly) {
+        Write-Host "Preview CSV:      $($script:PreviewFilePath)"
+    }
+    Write-Host "Summary JSON:     $summaryFile"
+    Write-Host "Execution Time:   $($summary.ExecutionTime)"
+    Write-Host "==========================================" -ForegroundColor Cyan
+}
+
+# ==========================================
+# Main Execution
+# ==========================================
+try {
+    Write-Host "Starting document set split cleanup..." -ForegroundColor Cyan
+    Initialize-Credential
+    Initialize-ResultWriter
+    Invoke-SplitDocumentSetByItemCount
+}
+catch {
+    Write-Error "Fatal error: $_"
+    exit 1
+}
+finally {
+    if ($script:ResultWriter) {
+        try { $script:ResultWriter.Flush() } catch { }
+        try { $script:ResultWriter.Dispose() } catch { }
+    }
+    if ($script:PreviewWriter) {
+        try { $script:PreviewWriter.Flush() } catch { }
+        try { $script:PreviewWriter.Dispose() } catch { }
+    }
+    Disconnect-PnPOnline -ErrorAction SilentlyContinue
+    Write-Host "Script execution completed." -ForegroundColor Cyan
+}
