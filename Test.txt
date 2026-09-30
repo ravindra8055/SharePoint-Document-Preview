@@ -4,10 +4,10 @@
     Keeps a SharePoint Online document set under 4500 items and moves older overflow to a target document set.
 
 .DESCRIPTION
-    Reads a CSV file containing SiteUrl, SourceDocumentSetPath, and TargetDocumentSetPath.
-    For each row, the script connects to the SharePoint Online site and inspects the source
-    document set. If the item count exceeds the configured cap (default 4500), the oldest items
-    are moved to the target document set until the source document set is back at or under the cap.
+    Reads a CSV file containing source and target SharePoint Online site URLs and document set paths.
+    For each row, the script connects to the source site, inspects the document set, and if the item
+    count exceeds the configured cap (default 4500), the oldest items are moved to the target document
+    set in the target site collection until the source document set is at or under the cap.
 
     This is intended for SharePoint Online document sets that hit the 5000-item threshold and need
     the older content split into a separate overflow document set while keeping the active document
@@ -15,9 +15,13 @@
 
 .PARAMETER CsvInputPath
     Path to the CSV file with required columns:
-    - SiteUrl               : SharePoint Online site URL, for example https://tenant.sharepoint.com/sites/Finance
+    - SourceSiteUrl         : SharePoint Online source site URL, for example https://tenant.sharepoint.com/sites/Finance
     - SourceDocumentSetPath : Source document set path, for example /sites/Finance/Shared Documents/DocSet-Active
-    - TargetDocumentSetPath : Overflow document set path, for example /sites/Finance/Shared Documents/DocSet-Archive
+    - TargetSiteUrl         : SharePoint Online target site URL, for example https://tenant.sharepoint.com/sites/Archive
+    - TargetDocumentSetPath : Overflow document set path, for example /sites/Archive/Shared Documents/DocSet-Archive
+
+    The script also accepts the legacy single-site format using SiteUrl + TargetDocumentSetPath when
+    the source and target site collection are the same.
 
 .PARAMETER ClientId
     Azure AD application client ID used for SharePoint Online authentication.
@@ -44,6 +48,15 @@
         -TargetPassword "Password123!" `
         -MaxAllowedItems 4500 `
         -OutputFolder ".\SplitDocumentSetLog"
+
+    .\Split-DocumentSetByItemCount.ps1 `
+        -CsvInputPath ".\DocumentSetSplit-Input.csv" `
+        -ClientId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+        -TargetUsername "admin@contoso.onmicrosoft.com" `
+        -TargetPassword "Password123!" `
+        -MaxAllowedItems 4500 `
+        -PreviewOnly `
+        -OutputFolder ".\SplitDocumentSetPreview"
 
     .\Split-DocumentSetByItemCount.ps1 `
         -CsvInputPath ".\DocumentSetSplit-Input.csv" `
@@ -94,7 +107,8 @@ $script:PreviewWriter  = $null
 $script:PreviewFilePath = $null
 $script:ResultColumns  = @(
     "RowNumber",
-    "SiteUrl",
+    "SourceSiteUrl",
+    "TargetSiteUrl",
     "SourceDocumentSetPath",
     "TargetDocumentSetPath",
     "SourceItemCount",
@@ -167,13 +181,17 @@ function Test-CsvFormat {
     }
 
     $first = $Rows[0]
-    $requiredColumns = @("SiteUrl", "SourceDocumentSetPath", "TargetDocumentSetPath")
+    $props = $first.PSObject.Properties.Name
 
-    foreach ($column in $requiredColumns) {
-        if (-not ($first.PSObject.Properties.Name -contains $column)) {
-            throw "CSV must contain required column: $column"
-        }
+    if (($props -contains "SourceSiteUrl") -and ($props -contains "SourceDocumentSetPath") -and ($props -contains "TargetSiteUrl") -and ($props -contains "TargetDocumentSetPath")) {
+        return
     }
+
+    if (($props -contains "SiteUrl") -and ($props -contains "SourceDocumentSetPath") -and ($props -contains "TargetDocumentSetPath")) {
+        return
+    }
+
+    throw "CSV must contain either SourceSiteUrl/TargetSiteUrl + SourceDocumentSetPath/TargetDocumentSetPath or the legacy SiteUrl + SourceDocumentSetPath + TargetDocumentSetPath columns."
 }
 
 # ==========================================
@@ -418,6 +436,9 @@ function Move-OverflowItemsToTargetDocumentSet {
         [Parameter(Mandatory = $true)]
         [string]$SiteUrl,
 
+        [Parameter(Mandatory = $false)]
+        [string]$TargetSiteUrl,
+
         [Parameter(Mandatory = $true)]
         [string]$SourceDocumentSetPath,
 
@@ -430,8 +451,12 @@ function Move-OverflowItemsToTargetDocumentSet {
         [switch]$PreviewOnly
     )
 
+    if ([string]::IsNullOrWhiteSpace($TargetSiteUrl)) {
+        $TargetSiteUrl = $SiteUrl
+    }
+
     $sourceFullUrl = Resolve-DocumentSetUrl -SiteUrl $SiteUrl -DocumentSetPath $SourceDocumentSetPath
-    $targetFullUrl = Resolve-DocumentSetUrl -SiteUrl $SiteUrl -DocumentSetPath $TargetDocumentSetPath
+    $targetFullUrl = Resolve-DocumentSetUrl -SiteUrl $TargetSiteUrl -DocumentSetPath $TargetDocumentSetPath
 
     if ($sourceFullUrl -eq $targetFullUrl) {
         throw "Source and target document set paths are identical. Please choose different paths."
@@ -441,13 +466,17 @@ function Move-OverflowItemsToTargetDocumentSet {
     $sourceItemCount = $sourceFiles.Count
 
     if ($sourceItemCount -le $MaxAllowedItems) {
-        $targetFullUrl = Ensure-DocumentSetExists -SiteUrl $SiteUrl -DocumentSetPath $TargetDocumentSetPath
-        $targetFiles = @(Get-DocumentSetFiles -SiteUrl $SiteUrl -DocumentSetPath $TargetDocumentSetPath)
+        $targetFiles = @()
+        if (-not $PreviewOnly) {
+            $targetFullUrl = Ensure-DocumentSetExists -SiteUrl $TargetSiteUrl -DocumentSetPath $TargetDocumentSetPath
+            $targetFiles = @(Get-DocumentSetFiles -SiteUrl $TargetSiteUrl -DocumentSetPath $TargetDocumentSetPath)
+        }
 
         if ($PreviewOnly) {
             foreach ($file in $sourceFiles) {
                 $previewRow = [PSCustomObject]@{
-                    SiteUrl = $SiteUrl
+                    SourceSiteUrl = $SiteUrl
+                    TargetSiteUrl = $TargetSiteUrl
                     SourceDocumentSetPath = $SourceDocumentSetPath
                     TargetDocumentSetPath = $TargetDocumentSetPath
                     FileName = $file.Name
@@ -472,7 +501,9 @@ function Move-OverflowItemsToTargetDocumentSet {
         }
     }
 
-    $targetFullUrl = Ensure-DocumentSetExists -SiteUrl $SiteUrl -DocumentSetPath $TargetDocumentSetPath
+    if (-not $PreviewOnly) {
+        $targetFullUrl = Ensure-DocumentSetExists -SiteUrl $TargetSiteUrl -DocumentSetPath $TargetDocumentSetPath
+    }
 
     $overflowCount = $sourceItemCount - $MaxAllowedItems
     $sortedFiles = @($sourceFiles | Sort-Object { Get-FileSortTimestamp -File $_ })
@@ -489,7 +520,8 @@ function Move-OverflowItemsToTargetDocumentSet {
         foreach ($file in $sortedFiles) {
             $shouldMove = $moveLookup.ContainsKey($file.ServerRelativeUrl)
             $previewRow = [PSCustomObject]@{
-                SiteUrl = $SiteUrl
+                SourceSiteUrl = $SiteUrl
+                TargetSiteUrl = $TargetSiteUrl
                 SourceDocumentSetPath = $SourceDocumentSetPath
                 TargetDocumentSetPath = $TargetDocumentSetPath
                 FileName = $file.Name
@@ -503,7 +535,14 @@ function Move-OverflowItemsToTargetDocumentSet {
             if ($shouldMove) { $movedCount++ }
         }
 
-        $updatedTargetFiles = @(Get-DocumentSetFiles -SiteUrl $SiteUrl -DocumentSetPath $TargetDocumentSetPath)
+        $updatedTargetFiles = @()
+        try {
+            $updatedTargetFiles = @(Get-DocumentSetFiles -SiteUrl $TargetSiteUrl -DocumentSetPath $TargetDocumentSetPath)
+        }
+        catch {
+            $updatedTargetFiles = @()
+        }
+
         return [PSCustomObject]@{
             SourceItemCount = $sourceItemCount
             TargetItemCount = $updatedTargetFiles.Count
@@ -530,7 +569,7 @@ function Move-OverflowItemsToTargetDocumentSet {
     }
 
     $updatedSourceFiles = @(Get-DocumentSetFiles -SiteUrl $SiteUrl -DocumentSetPath $SourceDocumentSetPath)
-    $updatedTargetFiles = @(Get-DocumentSetFiles -SiteUrl $SiteUrl -DocumentSetPath $TargetDocumentSetPath)
+    $updatedTargetFiles = @(Get-DocumentSetFiles -SiteUrl $TargetSiteUrl -DocumentSetPath $TargetDocumentSetPath)
     $finalRetained = $updatedSourceFiles.Count
 
     return [PSCustomObject]@{
@@ -569,7 +608,8 @@ function Invoke-SplitDocumentSetByItemCount {
     foreach ($csvRow in $rows) {
         $rowIndex++
 
-        $siteUrl = $csvRow.SiteUrl
+        $siteUrl = if ($csvRow.PSObject.Properties.Name -contains "SourceSiteUrl") { $csvRow.SourceSiteUrl } else { $csvRow.SiteUrl }
+        $targetSiteUrl = if ($csvRow.PSObject.Properties.Name -contains "TargetSiteUrl") { $csvRow.TargetSiteUrl } else { $siteUrl }
         $sourceDocSetPath = $csvRow.SourceDocumentSetPath
         $targetDocSetPath = $csvRow.TargetDocumentSetPath
 
@@ -578,10 +618,11 @@ function Invoke-SplitDocumentSetByItemCount {
         }
 
         # Skip blank rows.
-        if ([string]::IsNullOrWhiteSpace($siteUrl) -or [string]::IsNullOrWhiteSpace($sourceDocSetPath) -or [string]::IsNullOrWhiteSpace($targetDocSetPath)) {
+        if ([string]::IsNullOrWhiteSpace($siteUrl) -or [string]::IsNullOrWhiteSpace($targetSiteUrl) -or [string]::IsNullOrWhiteSpace($sourceDocSetPath) -or [string]::IsNullOrWhiteSpace($targetDocSetPath)) {
             $row = [PSCustomObject]@{
                 RowNumber = $rowIndex
-                SiteUrl = $siteUrl
+                SourceSiteUrl = $siteUrl
+                TargetSiteUrl = $targetSiteUrl
                 SourceDocumentSetPath = $sourceDocSetPath
                 TargetDocumentSetPath = $targetDocSetPath
                 SourceItemCount = ""
@@ -590,7 +631,7 @@ function Invoke-SplitDocumentSetByItemCount {
                 RetainedItemCount = ""
                 Status = "Skipped"
                 IsSuccessful = $false
-                Message = "Missing required field (SiteUrl, SourceDocumentSetPath, or TargetDocumentSetPath)"
+                Message = "Missing required field (SourceSiteUrl/TargetSiteUrl, SourceDocumentSetPath, or TargetDocumentSetPath)"
                 Timestamp = (Get-Date).ToString("s")
             }
             Write-ResultRow -Row $row
@@ -611,7 +652,8 @@ function Invoke-SplitDocumentSetByItemCount {
         if ($connectionError) {
             $row = [PSCustomObject]@{
                 RowNumber = $rowIndex
-                SiteUrl = $siteUrl
+                SourceSiteUrl = $siteUrl
+                TargetSiteUrl = $targetSiteUrl
                 SourceDocumentSetPath = $sourceDocSetPath
                 TargetDocumentSetPath = $targetDocSetPath
                 SourceItemCount = ""
@@ -636,7 +678,7 @@ function Invoke-SplitDocumentSetByItemCount {
         $message = ""
 
         try {
-            $actionResult = Move-OverflowItemsToTargetDocumentSet -SiteUrl $siteUrl -SourceDocumentSetPath $sourceDocSetPath -TargetDocumentSetPath $targetDocSetPath -MaxAllowedItems $MaxAllowedItems -PreviewOnly:$PreviewOnly
+            $actionResult = Move-OverflowItemsToTargetDocumentSet -SiteUrl $siteUrl -TargetSiteUrl $targetSiteUrl -SourceDocumentSetPath $sourceDocSetPath -TargetDocumentSetPath $targetDocSetPath -MaxAllowedItems $MaxAllowedItems -PreviewOnly:$PreviewOnly
             $status = $actionResult.Status
             $isSuccessful = $actionResult.IsSuccessful
             $message = $actionResult.Message
@@ -649,7 +691,8 @@ function Invoke-SplitDocumentSetByItemCount {
 
         $row = [PSCustomObject]@{
             RowNumber = $rowIndex
-            SiteUrl = $siteUrl
+            SourceSiteUrl = $siteUrl
+            TargetSiteUrl = $targetSiteUrl
             SourceDocumentSetPath = $sourceDocSetPath
             TargetDocumentSetPath = $targetDocSetPath
             SourceItemCount = if ($null -ne $actionResult) { $actionResult.SourceItemCount } else { "" }
